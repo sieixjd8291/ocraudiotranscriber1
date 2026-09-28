@@ -1111,7 +1111,8 @@ export default function App() {
         const updatedItem = filesRef.current.find((f) => f.id === id);
         const currentAttempts = updatedItem?.retryAttempts || 0;
 
-        if (autoRetry) {
+        const isProviderUnavailable = /overloaded|high demand|resource_exhausted/.test(errorMessage.toLowerCase());
+        if (autoRetry && !isProviderUnavailable) {
           if (currentAttempts < 3) {
             const nextAttempt = currentAttempts + 1;
             setFiles((prev) =>
@@ -1120,7 +1121,7 @@ export default function App() {
                   ? {
                       ...f,
                       status: "processing", // Keeps the UI in processing state to avoid premature error flags
-                      retryMessage: `Verifying server-side completion... API timeout detected. Auto-reconnecting (Attempt ${nextAttempt}/3) in 2s...`,
+                      retryMessage: `Transcription interrupted. Retrying (Attempt ${nextAttempt}/3) in 2s...`,
                     }
                   : f,
               ),
@@ -1148,7 +1149,7 @@ export default function App() {
                       ...f,
                       status: "error",
                       error: errorMessage,
-                      retryMessage: `Verification failed. Auto-retry exhausted (tried 3 times).`,
+                      retryMessage: `Transcription failed after 3 retries.`,
                     }
                   : f,
               ),
