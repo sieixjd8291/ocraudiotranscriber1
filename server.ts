@@ -1335,7 +1335,10 @@ async function startServer() {
               throw err;
             }
 
-            const isOverloaded = errMsg.includes('503') ||
+            const errStatus = Number(err.status ?? err.code);
+            const isOverloaded = [429, 500, 502, 503, 504].includes(errStatus) ||
+                                 errMsg.includes('retryable') ||
+                                 errMsg.includes('503') ||
                                  errMsg.includes('500') ||
                                  errMsg.includes('504') ||
                                  errMsg.includes('unavailable') ||
