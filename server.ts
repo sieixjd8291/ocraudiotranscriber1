@@ -825,9 +825,9 @@ async function startServer() {
   const app = express();
   const PORT = 3000;
 
-  // Set payload size limit high to support large audio/video file uploads
-  app.use(express.json({ limit: "150mb" }));
-  app.use(express.urlencoded({ limit: "150mb", extended: true }));
+  // No payload size cap so arbitrarily large audio/video uploads are accepted
+  app.use(express.json({ limit: Infinity }));
+  app.use(express.urlencoded({ limit: Infinity, extended: true }));
 
   const storage = multer.diskStorage({
     destination: function (req, file, cb) {
@@ -849,7 +849,7 @@ async function startServer() {
 
   const activeUploads = new Map<string, { totalChunks: number, filename: string, mimeType: string, chunks: Map<number, Buffer>, receivedChunkIndices: Set<number> }>();
 
-  app.post("/api/uploads", multer({ storage: multer.memoryStorage(), limits: { fileSize: 25 * 1024 * 1024 } }).single("chunk"), async (req, res) => {
+  app.post("/api/uploads", multer({ storage: multer.memoryStorage() }).single("chunk"), async (req, res) => {
     try {
       const apiKey = req.headers["x-api-key"] as string;
       if (!apiKey) return res.status(401).json({ error: "Missing x-api-key" });
@@ -2875,6 +2875,8 @@ async function startServer() {
   server.setTimeout(0);
   server.headersTimeout = 0;
   server.keepAliveTimeout = 0;
+  // Node defaults to a 5-minute requestTimeout, which aborts slow uploads of large files
+  server.requestTimeout = 0;
 }
 
 startServer().catch((err) => {
