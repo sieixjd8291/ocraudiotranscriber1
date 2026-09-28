@@ -37,6 +37,13 @@
       ]
     },
     {
+      "source": "/api/process-file",
+      "headers": [
+        { "key": "Cache-Control", "value": "no-store" },
+        { "key": "CDN-Cache-Control", "value": "no-store" }
+      ]
+    },
+    {
       "source": "/api/proxy-audio",
       "headers": [
         { "key": "Cache-Control", "value": "public, max-age=0, must-revalidate, s-maxage=120, stale-while-revalidate=3600" }

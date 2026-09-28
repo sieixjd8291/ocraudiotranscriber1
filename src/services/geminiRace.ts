@@ -48,9 +48,9 @@ export class FirstChunkTimeoutError extends Error {
   }
 }
 
-/** Start the other Flash Lite model after five seconds without transcript text. */
-export function raceTimingsFor(_fileBytes: number): { hedgeAfterMs: number; firstChunkTimeoutMs: number } {
-  return { hedgeAfterMs: 5000, firstChunkTimeoutMs: 10000 };
+/** Hedge early, but allow audio models time to process before declaring them unavailable. */
+export function raceTimingsFor(fileBytes: number): { hedgeAfterMs: number; firstChunkTimeoutMs: number } {
+  return { hedgeAfterMs: 5000, firstChunkTimeoutMs: fileBytes > 2 * 1024 * 1024 ? 120000 : 60000 };
 }
 
 export function raceToFirstChunk<T>(options: RaceOptions<T>): Promise<{ winner: RaceWinner<T> | null; errors: RaceError[] }> {

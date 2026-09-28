@@ -15,8 +15,8 @@
 // validated here so a caller can't smuggle arbitrary config through.
 
 import { GoogleGenAI } from "@google/genai";
-import { raceTimingsFor, raceToFirstChunk } from "../src/services/geminiRace";
-import { buildModelOrder, getThinkingConfig, isKnownGeminiModel } from "../src/services/geminiModels";
+import { raceTimingsFor, raceToFirstChunk } from "../src/services/geminiRace.js";
+import { buildModelOrder, getThinkingConfig, isKnownGeminiModel } from "../src/services/geminiModels.js";
 
 // Vercel rejects request bodies over 4.5 MB before they reach the function.
 const MAX_INLINE_BYTES = 4 * 1024 * 1024;
