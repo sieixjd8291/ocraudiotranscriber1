@@ -830,7 +830,7 @@ function startServerSidePolling(editId: string, apiKey: string, exportConfig?: a
 
 async function startServer() {
   const app = express();
-  const PORT = 3000;
+  const PORT = Number(process.env.PORT) || 3000;
 
   // No payload size cap so arbitrarily large audio/video uploads are accepted
   app.use(express.json({ limit: Infinity }));
@@ -2688,11 +2688,13 @@ async function startServer() {
     res.json({ status: "ok" });
   });
 
+  const server = http.createServer(app);
+
   // Vite development / production middleware configuration
   if (process.env.NODE_ENV !== "production") {
     const { createServer: createViteServer } = await import("vite");
     const vite = await createViteServer({
-      server: { middlewareMode: true },
+      server: { middlewareMode: true, hmr: { server } },
       appType: "spa",
     });
     app.use(vite.middlewares);
@@ -2704,7 +2706,7 @@ async function startServer() {
     });
   }
 
-  const server = app.listen(PORT, "0.0.0.0", () => {
+  server.listen(PORT, "0.0.0.0", () => {
     console.log(`Server running on port ${PORT}`);
   });
 
@@ -2774,14 +2776,10 @@ async function startServer() {
   });
 
   server.on("upgrade", (request, socket, head) => {
-    // Only upgrade routes matching our status endpoint
-    if (request.url?.includes("/api/cleanvoice/ws-status")) {
-      wss.handleUpgrade(request, socket, head, (ws) => {
-        wss.emit("connection", ws, request);
-      });
-    } else {
-      socket.destroy();
-    }
+    if (new URL(request.url || "/", "http://localhost").pathname !== "/api/cleanvoice/ws-status") return;
+    wss.handleUpgrade(request, socket, head, (ws) => {
+      wss.emit("connection", ws, request);
+    });
   });
   
   // Background cleanup for local server caches every 30 minutes
