@@ -7,11 +7,7 @@ const ThinkingLevel = {
   LOW: "LOW" as ThinkingLevelEnum.LOW,
 };
 
-/**
- * Single source of truth for the transcription model order. Every caller
- * (client SDK path, Express server path, key verification, UI dropdowns)
- * walks this list top to bottom, so the order here IS the fallback order.
- */
+/** All models offered for manual selection and API-key verification. */
 export const GEMINI_MODEL_HIERARCHY = [
   "gemini-3.5-flash-lite",
   "gemini-3.1-flash-lite",
@@ -20,6 +16,9 @@ export const GEMINI_MODEL_HIERARCHY = [
   "gemini-3.6-flash",
   "gemini-3.5-flash",
 ] as const;
+
+/** Automatic switching is limited to the two Flash Lite models. */
+const FLASH_LITE_FALLBACK = ["gemini-3.5-flash-lite", "gemini-3.1-flash-lite"] as const;
 
 export type GeminiModelId = (typeof GEMINI_MODEL_HIERARCHY)[number];
 
@@ -38,17 +37,17 @@ export function isKnownGeminiModel(model: string | null | undefined): model is G
   return !!model && (GEMINI_MODEL_HIERARCHY as readonly string[]).includes(model);
 }
 
-/** Requested model first, then the rest of the hierarchy in order (no duplicates). */
+/** Manual Flash choices run alone; only Flash Lite selections switch automatically. */
 export function buildModelOrder(preferredModel?: string | null): string[] {
   const start = isKnownGeminiModel(preferredModel) ? preferredModel : PRIMARY_GEMINI_MODEL;
-  return [start, ...GEMINI_MODEL_HIERARCHY.filter((m) => m !== start)];
+  if (!FLASH_LITE_FALLBACK.some((model) => model === start)) return [start];
+  return [start, ...FLASH_LITE_FALLBACK.filter((model) => model !== start)];
 }
 
 /**
  * Gemini 3.5+ models always think and reject the legacy `thinkingBudget: 0`
  * ("disable thinking") with 400 INVALID_ARGUMENT — that is exactly the error
  * gemini-3.5-flash-lite was returning. They take `thinkingLevel` instead, and
- * not every model supports every level (3.7/3.8 Flash have no MINIMAL).
  * gemini-3.1-flash-lite still accepts `thinkingBudget: 0`, which is proven to
  * work in production, so it keeps that setting.
  */

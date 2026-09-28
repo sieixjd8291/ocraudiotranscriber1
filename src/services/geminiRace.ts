@@ -1,10 +1,9 @@
 // Shared by the browser (geminiService.ts) and the Vercel function
 // (api/process-file.ts). No runtime SDK import so it stays out of the main bundle.
 //
-// Why this exists: under load, Gemini often takes 10-50s just to *answer* with
-// a 503 (the logs show a 1-token request taking 47s to be rejected). Trying the
-// models strictly one after another meant each busy model could cost that long
-// before the next was even attempted. Instead we:
+// Why this exists: under load, Gemini can take a long time to reject a busy
+// model. Trying the models strictly one after another adds that delay before
+// the fallback can begin. Instead we:
 //   1. start the first model,
 //   2. if it hasn't produced its first chunk after `hedgeAfterMs`, start the
 //      next model in parallel (at most `maxParallel` in flight),
@@ -49,13 +48,9 @@ export class FirstChunkTimeoutError extends Error {
   }
 }
 
-/** Timings scale with upload size: Gemini has to ingest the whole file before its first token. */
-export function raceTimingsFor(fileBytes: number): { hedgeAfterMs: number; firstChunkTimeoutMs: number } {
-  const mb = fileBytes / (1024 * 1024);
-  return {
-    hedgeAfterMs: Math.round(Math.min(20000, 6000 + mb * 1500)),
-    firstChunkTimeoutMs: Math.round(Math.min(120000, 30000 + mb * 5000)),
-  };
+/** Start the other Flash Lite model after five seconds without transcript text. */
+export function raceTimingsFor(_fileBytes: number): { hedgeAfterMs: number; firstChunkTimeoutMs: number } {
+  return { hedgeAfterMs: 5000, firstChunkTimeoutMs: 10000 };
 }
 
 export function raceToFirstChunk<T>(options: RaceOptions<T>): Promise<{ winner: RaceWinner<T> | null; errors: RaceError[] }> {
@@ -104,8 +99,13 @@ export function raceToFirstChunk<T>(options: RaceOptions<T>): Promise<{ winner: 
       try {
         const stream = await start(entry, useThinking, controller.signal);
         const iterator = stream[Symbol.asyncIterator]();
-        const first = await iterator.next();
+        let first = await iterator.next();
+        while (!first.done && !first.value?.text && !controller.signal.aborted) {
+          first = await iterator.next();
+        }
         if (timedOut) throw new FirstChunkTimeoutError(entry.model, firstChunkTimeoutMs);
+        if (controller.signal.aborted) throw new Error(`${entry.model} request was cancelled`);
+        if (first.done) throw new Error(`${entry.model} returned an empty transcript`);
         return { model: entry.model, iterator, first, signal: controller.signal, controller };
       } catch (err) {
         if (timedOut) throw new FirstChunkTimeoutError(entry.model, firstChunkTimeoutMs);
