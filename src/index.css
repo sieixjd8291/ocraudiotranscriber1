@@ -1,0 +1,843 @@
+@import "tailwindcss";
+
+@variant dark (&:where(.dark, .dark *));
+
+@theme {
+  --font-sans: "Inter", ui-sans-serif, system-ui, sans-serif;
+  
+  --animate-dropzone-pulse: dropzonepulse 1.6s ease-in-out infinite;
+  --animate-gc-flicker: gcflicker 0.15s cubic-bezier(0.4, 0, 0.2, 1) infinite;
+
+  @keyframes dropzonepulse {
+    /*
+     * Pulse using ONLY transform + opacity (GPU-accelerated, composited on its
+     * own layer). Animating box-shadow/border-color here previously forced a
+     * full repaint every frame on a large blurred shadow, which combined with
+     * the element's `transition-all` to make the drag-active state look
+     * clunky/stuttery. Border + background color are now handled smoothly by
+     * the element's own `transition-colors`.
+     */
+    0%, 100% {
+      transform: scale(1);
+      opacity: 0.9;
+    }
+    50% {
+      transform: scale(1.015);
+      opacity: 1;
+    }
+  }
+  
+  @keyframes gcflicker {
+    0%, 100% {
+      opacity: 1;
+      transform: scale(1);
+    }
+    50% {
+      opacity: 0.4;
+      transform: scale(0.985);
+    }
+  }
+}
+
+/* Custom CSS Variables Theme Defaults (Royal Indigo) */
+:root {
+  --theme-bg: rgb(241, 245, 249);
+  --theme-card-bg: rgb(255, 255, 255);
+  --theme-border: rgb(226, 232, 240);
+  --theme-text: rgb(15, 23, 42);
+  --theme-text-muted: rgb(100, 116, 139);
+  --theme-accent: rgb(79, 70, 229);
+  --theme-accent-hover: rgb(67, 56, 202);
+  --theme-accent-light: rgba(79, 70, 229, 0.08);
+  --theme-shadow: 0 1px 3px 0 rgba(0, 0, 0, 0.1), 0 1px 2px -1px rgba(0, 0, 0, 0.1);
+  --theme-radius: 16px;
+  --theme-glow: 0 0 0 0 transparent;
+  
+  /* Tooltip Theme Variables */
+  --tooltip-bg: rgb(238, 242, 255); /* beautiful indigo-50 */
+  --tooltip-text: rgb(79, 70, 229); /* crisp brand indigo-600 */
+  --tooltip-border: rgb(199, 210, 254); /* indigo-200 border */
+  --tooltip-shadow: 0 4px 12px -1px rgba(99, 102, 241, 0.12), 0 2px 4px -2px rgba(99, 102, 241, 0.12);
+}
+:root.dark {
+  --theme-bg: rgb(2, 6, 23);
+  --theme-card-bg: rgb(15, 23, 42);
+  --theme-border: rgb(30, 41, 59);
+  --theme-text: rgb(248, 250, 252);
+  --theme-text-muted: rgb(148, 163, 184);
+  --theme-accent: rgb(99, 102, 241);
+  --theme-accent-hover: rgb(129, 140, 248);
+  --theme-accent-light: rgba(99, 102, 241, 0.15);
+  
+  /* Tooltip Dark Theme Variables */
+  --tooltip-bg: rgb(15, 23, 42); /* deep dark slate (slate-900) */
+  --tooltip-text: rgb(241, 245, 249); /* crisp off-white (slate-100) */
+  --tooltip-border: rgb(51, 65, 85); /* slate-700 border */
+  --tooltip-shadow: 0 4px 6px -1px rgba(0, 0, 0, 0.25), 0 2px 4px -2px rgba(0, 0, 0, 0.25);
+}
+
+/* Map CSS presets dynamically to elements */
+.theme-bg {
+  background-color: var(--theme-bg);
+  transition: background-color 0.25s ease;
+}
+.theme-card-bg {
+  background-color: var(--theme-card-bg);
+  transition: background-color 0.25s ease;
+}
+.theme-border {
+  border-color: var(--theme-border);
+  border-radius: var(--theme-radius);
+  transition: border-color 0.25s ease, border-radius 0.25s ease;
+}
+.theme-radius {
+  border-radius: var(--theme-radius);
+  transition: border-radius 0.25s ease;
+}
+.theme-text {
+  color: var(--theme-text);
+  transition: color 0.15s ease;
+}
+.theme-text-muted {
+  color: var(--theme-text-muted);
+  transition: color 0.15s ease;
+}
+.theme-accent {
+  background-color: var(--theme-accent);
+  transition: background-color 0.25s ease;
+}
+.theme-accent-text {
+  color: var(--theme-accent);
+  transition: color 0.15s ease;
+}
+.theme-shadow {
+  box-shadow: var(--theme-shadow);
+  transition: box-shadow 0.25s ease;
+}
+
+/* Adaptive markdown styling */
+.markdown-body {
+  color: var(--theme-text);
+  font-family: inherit;
+}
+
+.markdown-body p {
+  @apply mb-4;
+}
+
+.markdown-body h1, .markdown-body h2, .markdown-body h3, .markdown-body h4 {
+  color: var(--theme-text);
+  @apply font-bold mt-6 mb-3;
+}
+
+.markdown-body h1 { @apply text-2xl; }
+.markdown-body h2 { @apply text-xl; }
+.markdown-body h3 { @apply text-lg; }
+
+.markdown-body ul {
+  @apply list-disc pl-6 mb-4 space-y-2;
+  marker-color: var(--theme-accent);
+}
+
+.markdown-body ol {
+  @apply list-decimal pl-6 mb-4 space-y-2;
+  marker-color: var(--theme-accent);
+}
+
+.markdown-body li > p {
+  @apply mb-0 inline;
+}
+
+.markdown-body blockquote {
+  border-left-width: 4px;
+  border-left-color: var(--theme-accent);
+  background-color: var(--theme-accent-light);
+  @apply pl-4 py-2 pr-4 italic my-4 rounded-r-lg;
+}
+
+.markdown-body code:not([class*="language-"]) {
+  background-color: var(--theme-accent-light);
+  color: var(--theme-accent);
+  @apply px-1.5 py-0.5 rounded-md text-sm font-mono border border-slate-200/10;
+}
+
+.markdown-body pre {
+  @apply mb-4;
+}
+
+/* Custom Smart Tooltip Styling */
+#global-smart-tooltip {
+  position: fixed;
+  pointer-events: none;
+  z-index: 100000;
+  opacity: 0;
+  transform: scale(0.94) translateY(3px);
+  /* Opacity fades a touch faster than the transform settles, so the tooltip
+     appears instantly and then gracefully eases into place. */
+  transition: opacity 0.15s cubic-bezier(0.16, 1, 0.3, 1),
+    transform 0.2s cubic-bezier(0.16, 1, 0.3, 1);
+  transform-origin: center center;
+  will-change: opacity, transform;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+}
+
+/* Only reveal the tooltip on cursor-capable devices (PCs/desktops).
+   Touch-only devices never match this media query, so the `.show` state
+   has no visual effect there — keeping mobile screens free of sticky,
+   tap-triggered tooltips. */
+@media (hover: hover) and (pointer: fine) {
+  #global-smart-tooltip.show {
+    opacity: 1;
+    transform: scale(1) translateY(0);
+  }
+}
+
+.smart-tooltip-content {
+  background-color: var(--tooltip-bg, #1e293b);
+  color: var(--tooltip-text, #f8fafc);
+  border: 1px solid var(--tooltip-border, rgba(255,255,255,0.1));
+  font-family: var(--font-sans), system-ui, sans-serif;
+  font-size: 11px;
+  font-weight: 500;
+  line-height: 1.4;
+  letter-spacing: 0.01em;
+  padding: 5px 9px;
+  border-radius: 6px;
+  box-shadow: var(--tooltip-shadow, 0 4px 6px -1px rgba(0, 0, 0, 0.1), 0 2px 4px -1px rgba(0, 0, 0, 0.06));
+  white-space: normal;
+  max-width: 260px;
+  width: max-content;
+  position: relative;
+}
+
+.smart-tooltip-arrow {
+  width: 8px;
+  height: 8px;
+  background-color: var(--tooltip-bg, #1e293b);
+  border: 1px solid var(--tooltip-border, rgba(255,255,255,0.1));
+  position: absolute;
+  transform: rotate(45deg);
+  z-index: -1;
+}
+
+.smart-tooltip-arrow-top {
+  bottom: -4px;
+  border-top-color: transparent !important;
+  border-left-color: transparent !important;
+}
+
+.smart-tooltip-arrow-bottom {
+  top: -4px;
+  border-bottom-color: transparent !important;
+  border-right-color: transparent !important;
+}
+
+/* Base style for elements with tooltips, but without the bulky pseudo-elements */
+[data-tooltip]:not([data-tooltip=""]) {
+  position: relative;
+}
+
+/* Control Row and Column Alignments */
+.controls-row {
+  display: flex;
+  flex-direction: column;
+  align-items: stretch;
+  justify-content: space-between;
+  gap: 24px;
+  width: 100%;
+}
+
+@media (min-width: 768px) {
+  .controls-row {
+    flex-direction: row;
+  }
+}
+
+.controls-column {
+  display: flex;
+  flex-direction: column;
+  flex: 1;
+}
+
+.controls-column.controls-left {
+  min-width: 280px;
+}
+
+.controls-column.controls-right {
+  flex: 1; /* Match left column with equal split to center the divider perfectly */
+}
+
+.controls-title {
+  font-size: 10px;
+  font-weight: 900;
+  text-transform: uppercase;
+  letter-spacing: 0.05em;
+  color: var(--theme-text-muted);
+  margin-bottom: 8px;
+  display: block;
+}
+
+.controls-divider {
+  display: none;
+}
+
+@media (min-width: 768px) {
+  .controls-divider {
+    display: block;
+    width: 1px;
+    height: 32px; /* Match the exact 32px height (h-8) of the buttons */
+    align-self: flex-end; /* Align vertically at the bottom with the button row */
+    background-color: var(--theme-border);
+    margin-bottom: 0px; /* Align perfectly with the baseline of the buttons */
+    opacity: 0.8;
+  }
+}
+
+.controls-button-group {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 8px;
+}
+
+/* ==========================================================================
+   TIME-OF-DAY GREETING MICRO-ANIMATIONS 
+   ========================================================================== */
+
+/* State 1: Dawn (4:00 AM – 5:59 AM) */
+@keyframes dawn-rise {
+  0% {
+    transform: translateY(6px) scale(0.7);
+    opacity: 0.2;
+  }
+  30% {
+    transform: translateY(0) scale(1);
+    opacity: 1;
+  }
+  65% {
+    transform: translateY(0) scale(1.06);
+    opacity: 1;
+  }
+  100% {
+    transform: translateY(0) scale(1);
+    opacity: 1;
+  }
+}
+
+@keyframes dawn-pulse-glow {
+  0%, 100% {
+    opacity: 0.4;
+    transform: scale(0.95);
+  }
+  50% {
+    opacity: 1;
+    transform: scale(1.05);
+  }
+}
+
+.dawn-sun {
+  animation: dawn-rise 6.5s cubic-bezier(0.16, 1, 0.3, 1) infinite;
+  transform-origin: 12px 15px;
+  filter: drop-shadow(0 0 3px rgba(245, 158, 11, 0.45));
+}
+
+.dawn-rays {
+  animation: dawn-pulse-glow 3s ease-in-out infinite;
+  transform-origin: 12px 12px;
+}
+
+
+/* State 2: Morning (6:00 AM – 11:59 AM) */
+@keyframes morning-spin {
+  0% {
+    transform: rotate(0deg);
+  }
+  100% {
+    transform: rotate(360deg);
+  }
+}
+
+@keyframes morning-pulse {
+  0%, 100% {
+    transform: scale(1);
+  }
+  50% {
+    transform: scale(1.08);
+  }
+}
+
+.morning-sun {
+  animation: morning-pulse 3.5s ease-in-out infinite;
+  transform-origin: 12px 12px;
+  filter: drop-shadow(0 0 3px rgba(234, 179, 8, 0.5));
+}
+
+.morning-dots {
+  animation: morning-spin 14s linear infinite;
+  transform-origin: 12px 12px;
+}
+
+
+/* State 3: Afternoon (12:00 PM – 4:59 PM) */
+@keyframes afternoon-glow {
+  0%, 100% {
+    transform: scale(1);
+    opacity: 0.95;
+  }
+  50% {
+    transform: scale(1.08);
+    opacity: 1;
+  }
+}
+
+@keyframes afternoon-rays-spin {
+  0% {
+    transform: rotate(0deg);
+  }
+  100% {
+    transform: rotate(360deg);
+  }
+}
+
+.afternoon-sun {
+  animation: afternoon-glow 2.5s ease-in-out infinite;
+  transform-origin: 12px 12px;
+  filter: drop-shadow(0 0 5px rgba(249, 115, 22, 0.65));
+}
+
+.afternoon-rays {
+  animation: afternoon-rays-spin 22s linear infinite;
+  transform-origin: 12px 12px;
+}
+
+
+/* State 4: Evening (5:00 PM – 8:59 PM) */
+@keyframes evening-sunset {
+  0%, 100% {
+    transform: translateY(-0.4px);
+  }
+  50% {
+    transform: translateY(1.2px);
+  }
+}
+
+@keyframes evening-waves-fade {
+  0%, 100% {
+    opacity: 0.6;
+    transform: scaleX(0.98);
+  }
+  50% {
+    opacity: 0.95;
+    transform: scaleX(1.02);
+  }
+}
+
+.evening-sun-ball {
+  animation: evening-sunset 10s ease-in-out infinite;
+  transform-origin: 12px 12px;
+}
+
+.evening-waves-lines {
+  animation: evening-waves-fade 10s ease-in-out infinite;
+  transform-origin: 12px 18px;
+}
+
+
+/* State 5: Night (9:00 PM – 11:59 PM) */
+@keyframes night-rock {
+  0%, 100% {
+    transform: rotate(-3deg) scale(0.97);
+  }
+  50% {
+    transform: rotate(3deg) scale(1.03);
+  }
+}
+
+@keyframes night-star-twinkle-1 {
+  0%, 100% {
+    opacity: 0.3;
+    transform: scale(0.85);
+  }
+  50% {
+    opacity: 1;
+    transform: scale(1.2);
+  }
+}
+
+@keyframes night-star-twinkle-2 {
+  0%, 100% {
+    opacity: 1;
+    transform: scale(1.2);
+  }
+  50% {
+    opacity: 0.25;
+    transform: scale(0.7);
+  }
+}
+
+@keyframes night-star-twinkle-3 {
+  0%, 100% {
+    opacity: 0.45;
+    transform: scale(0.75);
+  }
+  50% {
+    opacity: 1;
+    transform: scale(1.25);
+  }
+}
+
+.night-moon-crescent {
+  animation: night-rock 4.5s ease-in-out infinite;
+  transform-origin: 12px 12px;
+}
+
+.night-star-1 {
+  animation: night-star-twinkle-1 2s ease-in-out infinite;
+  transform-origin: 19px 4.5px;
+}
+
+.night-star-2 {
+  animation: night-star-twinkle-2 1.6s ease-in-out infinite;
+  animation-delay: 0.3s;
+  transform-origin: 15.5px 8.5px;
+}
+
+.night-star-3 {
+  animation: night-star-twinkle-3 2.5s ease-in-out infinite;
+  animation-delay: 0.8s;
+  transform-origin: 9.5px 5.5px;
+}
+
+
+/* State 6: Midnight (12:00 AM – 3:59 AM) */
+@keyframes owl-breath {
+  0%, 100% {
+    transform: translateY(0);
+  }
+  50% {
+    transform: translateY(-1.8px);
+  }
+}
+
+@keyframes owl-blink {
+  0%, 88%, 94%, 100% {
+    transform: scaleY(1);
+  }
+  91%, 92% {
+    transform: scaleY(0.12);
+  }
+}
+
+.owl-body-group {
+  animation: owl-breath 4s ease-in-out infinite;
+  transform-origin: 12px 12px;
+}
+
+.owl-eyes-blink {
+  animation: owl-blink 6.5s ease-in-out infinite;
+  transform-origin: 12px 11.5px;
+}
+
+/* ==========================================================================
+   PERFORMANCE, ACCELERATION & RESPONSIVE REFINEMENTS
+   ========================================================================== */
+
+/* 1. Global Touch Container momentum scrolling */
+/* NOTE: `scroll-behavior: smooth !important` was removed because forcing smooth
+   scrolling on EVERY scroll container (waveform editors, results lists, modals)
+   causes scroll jank on mobile and fights the user's own scrolling momentum.
+   Apply smooth scroll selectively per-element via Tailwind's `scroll-smooth`
+   utility where a smooth programmatic scroll is genuinely wanted. */
+.overflow-y-auto, 
+.overflow-x-auto,
+[class*="overflow-y-"],
+[class*="overflow-x-"] {
+  -webkit-overflow-scrolling: touch !important;
+}
+
+/* 2. Enable Hardware Acceleration (GPU layer promotion) on all video, audio, canvas, and heavy UI rendering elements, optimized for power efficiency and mobile devices */
+video,
+audio,
+canvas,
+.gpu-accelerated,
+.hardware-accelerated,
+.motion-safe-transition,
+.active-processing-block,
+[id*="processing-card"],
+.dawn-sun, 
+.dawn-rays, 
+.morning-sun, 
+.morning-dots, 
+.afternoon-sun, 
+.afternoon-rays, 
+.evening-sun-ball, 
+.evening-waves-lines, 
+.night-moon-crescent, 
+.night-star-1, 
+.night-star-2, 
+.night-star-3, 
+.owl-body-group, 
+.owl-eyes-blink,
+.animate-pulse {
+  /* Promote to dedicated compositor layer using translate3d to reduce latency and processing stutter */
+  transform: translate3d(0, 0, 0);
+  backface-visibility: hidden;
+  perspective: 1000px;
+}
+
+/* Limit power and VRAM footprint: Apply will-change selectively only to elements that actually animate or transition,
+   preventing the browser from exhausting mobile memory resources or draining batteries with persistent idle GPU layers */
+.gpu-accelerated,
+.hardware-accelerated,
+.active-processing-block,
+.animate-pulse,
+.owl-eyes-blink,
+.dawn-rays,
+.morning-dots,
+.afternoon-rays,
+.evening-waves-lines {
+  will-change: transform, opacity;
+}
+
+/* Complete power-saving override for devices indicating a preference for reduced motion or active battery saving */
+@media (prefers-reduced-motion: reduce) {
+  video,
+  audio,
+  canvas,
+  .gpu-accelerated,
+  .hardware-accelerated,
+  .motion-safe-transition,
+  .active-processing-block,
+  [id*="processing-card"],
+  .dawn-sun, 
+  .dawn-rays, 
+  .morning-sun, 
+  .morning-dots, 
+  .afternoon-sun, 
+  .afternoon-rays, 
+  .evening-sun-ball, 
+  .evening-waves-lines, 
+  .night-moon-crescent, 
+  .night-star-1, 
+  .night-star-2, 
+  .night-star-3, 
+  .owl-body-group, 
+  .owl-eyes-blink,
+  .animate-pulse {
+    will-change: auto !important;
+    transform: none !important;
+    backface-visibility: visible !important;
+    perspective: none !important;
+  }
+}
+
+@keyframes spin {
+  0% { transform: rotate(0deg); }
+  100% { transform: rotate(360deg); }
+}
+
+.animate-spin {
+  animation: spin 1s linear infinite !important;
+  transform-origin: center !important;
+  display: inline-block !important;
+  will-change: transform;
+}
+
+/* 3. Eliminate Cumulative Layout Shift (CLS) cleanly without clipping or containment */
+.layout-shift-prevent {
+  min-height: 80px; /* Safe minimum height anchor */
+}
+
+/* 4. Fluid Responsive Layout guards for smaller screens.
+   NOTE: Spacing, padding, and fluid typography are handled per-element via
+   Tailwind responsive variants (e.g. `p-4 sm:p-6 md:p-8`, `text-xl sm:text-2xl`).
+   Global !important overrides on utilities were removed because they silently
+   clobbered intentional spacing classes and caused layout regressions.
+   Only the horizontal non-clipping guard remains here as a safety net. */
+@media (max-width: 768px) {
+  /* Enforce horizontal non-clipping on small screens */
+  body, html, #root {
+    max-width: 100vw !important;
+    overflow-x: hidden !important;
+  }
+}
+
+/* ==========================================================================
+   RESULT CARD — MOBILE ACTION TOOLBAR (single-line, scaled icons)
+   Forces the per-card utility toolbar (View / Refresh / Text-Case / Code /
+   Copy / Download / Delete) to stay on ONE horizontal line on phones instead of
+   wrapping the last icons to a second row — WITHOUT overlapping or clipping.
+   Sizes scale down with the viewport so the row never exceeds it (the rule
+   above guards against overflow-x). Scope is the `.rc-action-toolbar` hook on
+   the toolbar wrapper only; desktop (>=640px / `sm:`) is controlled by Tailwind
+   classes and intentionally untouched here.
+
+   KEY: the text-case group (Aa/aa/AA) is a NESTED flex container holding three
+   segments, so it is sized to its CONTENT — never a fixed width, which was what
+   caused the earlier clipping/collision.
+   ========================================================================== */
+@media (max-width: 639px) {
+  .rc-action-toolbar {
+    /* Hard guarantee: never wrap. */
+    flex-wrap: nowrap !important;
+    /* Symmetrical, balanced distribution across the full row. */
+    justify-content: center;
+    /* Single source of truth for inter-element spacing on mobile. No fixed
+       margins anywhere, so nothing can break out of the inline flow. */
+    gap: 0.25rem; /* 4px */
+  }
+
+  /* Only the standalone ICON buttons get a fixed, smaller touch target. The
+     case-toggle GROUP wrapper is intentionally NOT targeted here — it must keep
+     `width: auto` so its three letter-segments fit without clipping. */
+  .rc-action-toolbar > button {
+    width: 28px !important;
+    height: 28px !important;
+    /* Minimum functional padding; sizing comes from width/height above. */
+    padding: 2px !important;
+    /* Never compress to a distorted shape. */
+    flex-shrink: 0;
+  }
+
+  /* The text-case group wrapper: shrink to fit content, match icon height. */
+  .rc-action-toolbar > div {
+    height: 28px !important;
+    width: auto !important;       /* let the 3 segments define its width */
+    flex-shrink: 0;
+  }
+
+  /* Each Aa/aa/AA segment: smaller but still legible + tappable. 20px each
+     = ~60px group + padding, which sits comfortably beside the 28px icons. */
+  .rc-action-toolbar > div > button {
+    width: 20px !important;
+    height: 100%;
+    font-size: 10px;              /* slightly smaller glyphs, no clipping */
+    line-height: 1;
+  }
+
+  /* Proportionally shrink the lucide icons so they stay centered inside the
+     28px buttons without overflowing. */
+  .rc-action-toolbar svg {
+    width: 0.875rem;  /* 14px */
+    height: 0.875rem; /* 14px */
+  }
+}
+
+/* Extra-narrow phones (<360px): one more gentle step down so even the widest
+   7-icon row stays on a single line with breathing room. */
+@media (max-width: 359px) {
+  .rc-action-toolbar {
+    gap: 0.125rem; /* 2px */
+  }
+  .rc-action-toolbar > button {
+    width: 26px !important;
+    height: 26px !important;
+  }
+  .rc-action-toolbar > div > button {
+    width: 18px !important;
+    font-size: 9px;
+  }
+  .rc-action-toolbar svg {
+    width: 0.8125rem;  /* 13px */
+    height: 0.8125rem;
+  }
+}
+
+/* High performance custom easings for all micro-transitions (using premium cubic-bezier) */
+.transition,
+.transition-all,
+.transition-colors,
+.transition-opacity,
+.transition-shadow,
+.transition-transform {
+  transition-timing-function: cubic-bezier(0.16, 1, 0.3, 1) !important;
+}
+
+/* Custom CSS hover transition for the upload icon */
+.upload-icon-interactive {
+  color: rgb(99, 102, 241); /* Default Indigo-500 equivalent */
+  transition: color 0.25s cubic-bezier(0.16, 1, 0.3, 1), transform 0.2s cubic-bezier(0.16, 1, 0.3, 1) !important;
+}
+
+/* Color transitions to indigo-600 (#4f46e5) when user interacts (hovers/focuses parent or icon) */
+.group:hover .upload-icon-interactive,
+.upload-icon-interactive:hover {
+  color: rgb(79, 70, 229) !important; /* Indigo-600 */
+}
+
+/* Support dark mode theme compatibility */
+.dark .upload-icon-interactive {
+  color: rgb(129, 140, 248); /* Indigo-400 */
+}
+
+.dark .group:hover .upload-icon-interactive,
+.dark .upload-icon-interactive:hover {
+  color: rgb(99, 102, 241) !important; /* Indigo-500 */
+}
+
+/* Respect the OS "reduce motion" accessibility setting.
+   The Greeting scene runs many simultaneous infinite CSS animations
+   (rising/pulsing/spinning suns, twinkling stars, blinking owl) layered with
+   GPU-expensive drop-shadow filters. For users who request reduced motion — and
+   to cut continuous repaint/compositing cost on low-power devices — freeze all
+   of those animations and drop the filters. Default behavior is unchanged for
+   everyone else.
+ */
+@media (prefers-reduced-motion: reduce) {
+  .dawn-sun,
+  .dawn-rays,
+  .morning-sun,
+  .morning-dots,
+  .afternoon-sun,
+  .afternoon-rays,
+  .evening-sun-ball,
+  .evening-waves-lines,
+  .night-moon-crescent,
+  .night-star-twinkle-1,
+  .night-star-twinkle-2,
+  .night-star-twinkle-3,
+  .owl-breath,
+  .owl-blink {
+    animation: none !important;
+    filter: none !important;
+  }
+}
+
+/* Modern, ultra-subtle custom scrollbar for modals and scroll containers */
+.custom-scrollbar::-webkit-scrollbar {
+  width: 5px;
+  height: 5px;
+}
+
+.custom-scrollbar::-webkit-scrollbar-track {
+  background: transparent;
+}
+
+.custom-scrollbar::-webkit-scrollbar-thumb {
+  background: rgba(148, 163, 184, 0.3);
+  border-radius: 9999px;
+  transition: background 0.2s ease;
+}
+
+.custom-scrollbar::-webkit-scrollbar-thumb:hover {
+  background: rgba(148, 163, 184, 0.5);
+}
+
+.dark .custom-scrollbar::-webkit-scrollbar-thumb {
+  background: rgba(148, 163, 184, 0.15);
+}
+
+.dark .custom-scrollbar::-webkit-scrollbar-thumb:hover {
+  background: rgba(148, 163, 184, 0.3);
+}
+
+
+
+
+
+
+
+
+

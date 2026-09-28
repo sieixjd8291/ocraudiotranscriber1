@@ -1,0 +1,10 @@
+{
+  "name": "Final (Audio \u0026 OCR)",
+  "description": "Upload documents, images, and audio files or record audio to extract text and transcribe mixed Bengali and English content.",
+  "requestFramePermissions": [
+    "microphone"
+  ],
+  "majorCapabilities": [
+    "MAJOR_CAPABILITY_SERVER_SIDE_GEMINI_API"
+  ]
+}
