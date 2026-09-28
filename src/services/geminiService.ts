@@ -9,6 +9,7 @@ import {
   getThinkingConfig,
   isInvalidArgumentError,
 } from './geminiModels';
+import { raceTimingsFor, raceToFirstChunk } from './geminiRace';
 
 /**
  * Encodes a contiguous slice of a byte array to a Base64 string WITHOUT relying
@@ -131,34 +132,12 @@ export async function prewarmGeminiClient(specificModel?: string) {
     const clientInitDuration = performance.now() - startClientInit;
     GeminiPerformanceLogger.log("CLIENT_SDK_INITIALIZATION_HANDSHAKE", clientInitDuration, "Constructed GoogleGenAI SDK instance.");
     
-    // Warm up only the requested model, or the primary model by default.
-    // NOTE: do NOT warm fallback models (e.g. gemini-3.5-flash) here — each warm
-    // probe is a real generateContent call that consumes free-tier quota
-    // (gemini-3.5-flash is capped at 20/day), and the logs showed idle warm-up
-    // alone exhausting it (429). Fallback models are probed lazily by the
-    // processFile fallback hierarchy only when the primary model actually fails.
-    const modelsToWarm = specificModel
-      ? [specificModel]
-      : [PRIMARY_GEMINI_MODEL];
-
-    for (const model of modelsToWarm) {
-      const modelWarmingStart = performance.now();
-      ai.models.generateContent({
-        model: model,
-        contents: "Pre-warm warm-up handshake request.",
-        config: { 
-          maxOutputTokens: 1, 
-          temperature: 0.0,
-          thinkingConfig: getThinkingConfig(model)
-        }
-      }).then(() => {
-        const duration = performance.now() - modelWarmingStart;
-        GeminiPerformanceLogger.log("CLIENT_SDK_MODEL_WARM_RESOLVED", duration, "Direct generateContent warming request succeeded", model);
-      }).catch((e: any) => {
-        const duration = performance.now() - modelWarmingStart;
-        GeminiPerformanceLogger.log("CLIENT_SDK_MODEL_WARM_REJECTED", duration, `Warming request failed/aborted: ${e.message || e}`, model);
-      });
-    }
+    // No warm-up generateContent call any more: it was a real request on the
+    // same key (the logs show it taking 9-47s to be rejected with 503) that
+    // competed with the actual transcription for rate limit and capacity.
+    // index.html preconnects to the Gemini API host instead, which gets the
+    // TLS/DNS setup done without spending a request.
+    void ai;
 
     // Trigger server-side pre-warm endpoint if possible to optimize backend instance cold-starts.
     // Skip on static hosting (Netlify/GitHub Pages): there is no serverless route there,
@@ -211,6 +190,19 @@ function waitWithAbort(ms: number, signal?: AbortSignal): Promise<void> {
     }, ms);
     signal?.addEventListener("abort", onAbort, { once: true });
   });
+}
+
+function isClientAuthError(error: any): boolean {
+  const status = Number(error?.status ?? error?.code);
+  const msg = String(error?.message || error).toLowerCase();
+  return (
+    status === 401 ||
+    status === 403 ||
+    msg.includes("invalid api key") ||
+    msg.includes("permission_denied") ||
+    msg.includes("key not valid") ||
+    msg.includes("api_key_invalid")
+  );
 }
 
 function isTransientError(error: any): boolean {
@@ -797,170 +789,105 @@ Treat this segment as a direct continuation of that text. Do NOT repeat or resta
       errors.length = 0;
       await waitWithAbort(cooldownMs, signal);
     }
-    for (const currentModel of modelsToTry) {
-      if (signal?.aborted) {
-        throw new DOMException("The user aborted a request.", "AbortError");
-      }
+    if (signal?.aborted) {
+      throw new DOMException("The user aborted a request.", "AbortError");
+    }
 
-      let attempt = 0;
-      // One attempt per model per sweep: an immediate retry of a model that just
-      // said "high demand" only returned another 503. The outer sweep loop owns
-      // the cool-down timing. (A 400 still gets one config-fallback retry below.)
-      const maxRetries = 1;
-      let useModelDefaultThinking = false;
+    // Busy models are raced (see geminiRace.ts): if the current model hasn't
+    // started streaming after a few seconds, the next one starts in parallel
+    // and whichever answers first wins. Previously each busy model could hang
+    // for 10-50s before returning 503, one after another.
+    const b64 = await loadBase64();
+    const contents = {
+      parts: [
+        { inlineData: { data: b64, mimeType: actualMimeType || "application/octet-stream" } },
+        {
+          text: actualMimeType.startsWith("image/")
+            ? "Extract text verbatim."
+            : "Classify and transcribe verbatim, following system-defined transliteration/transcription rules.",
+        },
+      ],
+    };
+    const sdkInvokeStart = performance.now();
+    const { winner, errors: raceErrors } = await raceToFirstChunk<any>({
+      plan: modelsToTry.map((model) => ({ model, thinkingConfig: getThinkingConfig(model) })),
+      signal,
+      ...raceTimingsFor(file.size),
+      maxParallel: 2,
+      isFatal: isClientAuthError,
+      isInvalidArgument: isInvalidArgumentError,
+      log: (message) => console.log(`[Gemini client-side] ${message}`),
+      start: (entry, useThinking, attemptSignal) =>
+        ai.models.generateContentStream({
+          model: entry.model,
+          contents,
+          config: {
+            systemInstruction: prompt,
+            temperature: 0.0,
+            abortSignal: attemptSignal,
+            ...(useThinking && entry.thinkingConfig ? { thinkingConfig: entry.thinkingConfig as any } : {}),
+          },
+        }),
+    });
 
-      while (attempt < maxRetries) {
-        attempt++;
-        try {
-          console.log(`[Gemini client-side] Running client-side direct transcription with ${currentModel} (Attempt ${attempt}/${maxRetries})...`);
-          
-          // Lazy load base64 only if we are actually using client fallback
-          const b64 = await loadBase64();
+    if (signal?.aborted) {
+      throw new DOMException("The user aborted a request.", "AbortError");
+    }
 
-          console.log(`[Gemini client-side] Initiating direct model invocation request for ${currentModel}...`);
-          const sdkInvokeStart = performance.now();
-          const responseStream = await ai.models.generateContentStream({
-            model: currentModel,
-            contents: {
-              parts: [
-                {
-                  inlineData: {
-                    data: b64,
-                    mimeType: actualMimeType || "application/octet-stream",
-                  },
-                },
-                {
-                  text: actualMimeType.startsWith("image/") ? "Extract text verbatim." : "Classify and transcribe verbatim, following system-defined transliteration/transcription rules.",
-                },
-              ],
-            },
-            config: {
-              systemInstruction: prompt,
-              temperature: 0.0,
-              ...(useModelDefaultThinking ? {} : { thinkingConfig: getThinkingConfig(currentModel) }),
-            }
-          });
+    const fatal = raceErrors.find((e) => isClientAuthError(e.error));
+    if (fatal) {
+      const fatalMsg = String(fatal.error?.message || fatal.error).toLowerCase();
+      throw new Error(
+        fatalMsg.includes("permission_denied")
+          ? "Your Gemini API Key does not have access to the requested model. Ensure billing is enabled and API is enabled in Google Cloud Console."
+          : "The API Key provided is either invalid or does not have permission to access the Gemini API. Please check your credentials.",
+      );
+    }
+    errors.push(...raceErrors);
 
-          let accumulatedText = "";
-          let ttfbRegistered = false;
-          let lastUpdateTime = 0;
-          const UPDATE_THROTTLE_MS = 250; // Throttle to 4 updates per second to protect CPU and prevent UI freeze
+    if (winner) {
+      const currentModel = winner.model;
+      GeminiPerformanceLogger.log("CLIENT_TIME_TO_FIRST_STREAM_BYTE", performance.now() - sdkInvokeStart, "First stream chunk received (after model race)", currentModel);
+      try {
+        let accumulatedText = "";
+        let lastUpdateTime = 0;
+        const UPDATE_THROTTLE_MS = 250; // Throttle to 4 updates per second to protect CPU and prevent UI freeze
 
-          for await (const chunk of responseStream) {
-            if (signal?.aborted) {
-              throw new DOMException("The user aborted a request.", "AbortError");
-            }
-            if (chunk.text) {
-              accumulatedText += chunk.text;
-              if (!ttfbRegistered) {
-                ttfbRegistered = true;
-                const timeToFirstByte = performance.now() - sdkInvokeStart;
-                GeminiPerformanceLogger.log("CLIENT_TIME_TO_FIRST_STREAM_BYTE", timeToFirstByte, "Received first text stream token packet from model client-side", currentModel);
-              }
-              if (onChunk) {
-                const now = performance.now();
-                if (now - lastUpdateTime > UPDATE_THROTTLE_MS) {
-                  lastUpdateTime = now;
-                  onChunk(postProcessBanglish(accumulatedText));
-                }
-              }
-            }
-          }
-          // Ensure final full processed text is delivered on stream end
-          if (onChunk && accumulatedText) {
-            onChunk(postProcessBanglish(accumulatedText));
-          }
-
-          const sdkInvokeDuration = performance.now() - sdkInvokeStart;
-          GeminiPerformanceLogger.log("CLIENT_SDK_GENERATE_CONTENT_LATENCY", sdkInvokeDuration, "Direct stream API request finalized", currentModel);
-
-          if (accumulatedText) {
-            const totalClientDuration = performance.now() - startTotalProcess;
-            GeminiPerformanceLogger.log("CLIENT_TOTAL_FALLBACK_FLOW", totalClientDuration, "Succeeded using fallback route", currentModel);
-
-            successResult = {
-              text: postProcessBanglish(accumulatedText),
-              modelUsed: currentModel,
-            };
-            break;
-          }
-          throw new Error(`Empty response text from model ${currentModel}`);
-        } catch (err: any) {
-          console.warn(`[Gemini client-side] Error with model ${currentModel}:`, err);
-          const errMsg = String(err.message || err).toLowerCase();
-
-          if (signal?.aborted || err.name === "AbortError") {
+        let step = winner.first;
+        while (!step.done) {
+          if (signal?.aborted) {
             throw new DOMException("The user aborted a request.", "AbortError");
           }
-
-          const isQuotaError = errMsg.includes('quota') || errMsg.includes('429');
-          if (isQuotaError) {
-            errors.push({ model: currentModel, error: err });
-            break; // Fallback to next model immediately on quota limits
-          }
-          
-          const isAuthError = errMsg.includes("invalid api key") || 
-                             errMsg.includes("permission_denied") || 
-                             errMsg.includes("ya29") || 
-                             errMsg.includes("key not valid") || 
-                             errMsg.includes("api_key_invalid") ||
-                             errMsg.includes("403");
-                             
-          if (isAuthError) {
-            let cleanMessage = "The API Key provided is either invalid or does not have permission to access the Gemini API. Please check your credentials.";
-            if (errMsg.includes("permission_denied")) {
-               cleanMessage = "Your Gemini API Key does not have access to the requested model. Ensure billing is enabled and API is enabled in Google Cloud Console.";
-            }
-            throw new Error(cleanMessage);
-          }
-
-          // A 400 means the request shape was rejected (e.g. an unsupported
-          // thinking parameter). Retry this model once with its default
-          // thinking settings before falling back to the next model.
-          if (isInvalidArgumentError(err) && !useModelDefaultThinking) {
-            console.warn(`[Gemini client-side] ${currentModel} rejected the request config (400). Retrying once with model-default thinking settings...`);
-            useModelDefaultThinking = true;
-            attempt--;
-            continue;
-          }
-
-          if (attempt < maxRetries && isTransientError(err)) {
-            const delayMs = 1000 + Math.floor(Math.random() * 1000);
-            if (onRetry) {
-              onRetry(attempt, maxRetries, delayMs, err);
-            }
-            if (signal?.aborted) {
-              throw new DOMException("The user aborted a request.", "AbortError");
-            }
-            await new Promise<void>((resolve, reject) => {
-              // Close a race window: the signal could abort between the
-              // pre-check above and addEventListener below.
-              if (signal?.aborted) {
-                reject(new DOMException("The user aborted a request.", "AbortError"));
-                return;
+          const chunkText = step.value?.text;
+          if (chunkText) {
+            accumulatedText += chunkText;
+            if (onChunk) {
+              const now = performance.now();
+              if (now - lastUpdateTime > UPDATE_THROTTLE_MS) {
+                lastUpdateTime = now;
+                onChunk(postProcessBanglish(accumulatedText));
               }
-              // Declare the abort handler BEFORE the timeout that references it,
-              // so there is no temporal-dead-zone hazard.
-              const onAbort = () => {
-                clearTimeout(timeoutId);
-                signal?.removeEventListener('abort', onAbort);
-                reject(new DOMException("The user aborted a request.", "AbortError"));
-              };
-              const timeoutId = setTimeout(() => {
-                signal?.removeEventListener('abort', onAbort);
-                resolve();
-              }, delayMs);
-              signal?.addEventListener('abort', onAbort);
-            });
-          } else {
-            errors.push({ model: currentModel, error: err });
-            break;
+            }
           }
+          step = await winner.iterator.next();
         }
-      }
+        if (onChunk && accumulatedText) {
+          onChunk(postProcessBanglish(accumulatedText));
+        }
 
-      if (successResult) {
-        break;
+        GeminiPerformanceLogger.log("CLIENT_SDK_GENERATE_CONTENT_LATENCY", performance.now() - sdkInvokeStart, "Direct stream API request finalized", currentModel);
+
+        if (!accumulatedText) {
+          throw new Error(`Empty response text from model ${currentModel}`);
+        }
+        GeminiPerformanceLogger.log("CLIENT_TOTAL_FALLBACK_FLOW", performance.now() - startTotalProcess, "Succeeded using fallback route", currentModel);
+        successResult = { text: postProcessBanglish(accumulatedText), modelUsed: currentModel };
+      } catch (err: any) {
+        if (signal?.aborted || err?.name === "AbortError") {
+          throw new DOMException("The user aborted a request.", "AbortError");
+        }
+        console.warn(`[Gemini client-side] Stream from ${currentModel} failed mid-way:`, err);
+        errors.push({ model: currentModel, error: err });
       }
     }
     }

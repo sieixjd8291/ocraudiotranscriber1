@@ -15,6 +15,7 @@
 // validated here so a caller can't smuggle arbitrary config through.
 
 import { GoogleGenAI } from "@google/genai";
+import { raceTimingsFor, raceToFirstChunk } from "../src/services/geminiRace";
 
 // Vercel rejects request bodies over 4.5 MB before they reach the function.
 const MAX_INLINE_BYTES = 4 * 1024 * 1024;
@@ -151,9 +152,11 @@ export async function POST(request: Request): Promise<Response> {
   let iterator: AsyncIterator<any> | null = null;
   let firstChunkText = "";
   let modelUsed = "";
+  const requestStart = Date.now();
+  const timings = raceTimingsFor(file.size);
 
   try {
-    sweepLoop: for (let sweep = 0; sweep <= SWEEP_COOLDOWNS_MS.length; sweep++) {
+    for (let sweep = 0; sweep <= SWEEP_COOLDOWNS_MS.length; sweep++) {
       if (sweep > 0) {
         if (!errors.every((e) => e.overloaded)) break;
         const cooldown = SWEEP_COOLDOWNS_MS[sweep - 1];
@@ -162,42 +165,44 @@ export async function POST(request: Request): Promise<Response> {
         await sleep(cooldown, signal);
       }
 
-      for (const { model, thinkingConfig } of modelPlan) {
-        // One try per model per sweep, plus one retry without the thinking
-        // setting if the model rejects the request shape (400).
-        for (const useThinking of thinkingConfig ? [true, false] : [false]) {
-          try {
-            const stream = await ai.models.generateContentStream({
-              model,
-              contents,
-              config: {
-                systemInstruction: prompt,
-                temperature: 0,
-                abortSignal: signal,
-                ...(useThinking ? { thinkingConfig: thinkingConfig as any } : {}),
-              },
-            });
-            // Read the first chunk before committing headers: Gemini often
-            // reports 503 on the first read, and after headers are sent we can
-            // no longer fall back to another model.
-            const it = stream[Symbol.asyncIterator]();
-            const first = await it.next();
-            firstChunkText = first.done ? "" : first.value?.text || "";
-            iterator = it;
-            modelUsed = model;
-            break sweepLoop;
-          } catch (err: any) {
-            if (signal.aborted) throw err;
-            const message = String(err?.message || err);
-            console.log(`[api/process-file] ${model} failed (status ${errorStatus(err) || "?"}): ${message.slice(0, 300)}`);
-            if (isAuthError(err)) {
-              return json({ error: message, code: "AUTH" }, 401);
-            }
-            if (useThinking && isInvalidArgument(err)) continue;
-            errors.push({ model, message, overloaded: isOverloaded(err) });
-            break;
-          }
-        }
+      // Read each model's first chunk before committing headers: Gemini often
+      // reports 503 on the first read, and after headers are sent we can no
+      // longer fall back to another model.
+      const { winner, errors: raceErrors } = await raceToFirstChunk<any>({
+        plan: modelPlan,
+        signal,
+        ...timings,
+        maxParallel: 2,
+        isFatal: isAuthError,
+        isInvalidArgument,
+        log: (message) => console.log(`[api/process-file] ${message}`),
+        start: (entry, useThinking, attemptSignal) =>
+          ai.models.generateContentStream({
+            model: entry.model,
+            contents,
+            config: {
+              systemInstruction: prompt,
+              temperature: 0,
+              abortSignal: attemptSignal,
+              ...(useThinking && entry.thinkingConfig ? { thinkingConfig: entry.thinkingConfig as any } : {}),
+            },
+          }),
+      });
+
+      if (signal.aborted) return json({ error: "Request aborted.", code: "ABORTED" }, 499);
+
+      const fatal = raceErrors.find((e) => isAuthError(e.error));
+      if (fatal) return json({ error: String(fatal.error?.message || fatal.error), code: "AUTH" }, 401);
+
+      for (const e of raceErrors) {
+        errors.push({ model: e.model, message: String(e.error?.message || e.error), overloaded: isOverloaded(e.error) });
+      }
+
+      if (winner) {
+        firstChunkText = winner.first.done ? "" : winner.first.value?.text || "";
+        iterator = winner.iterator;
+        modelUsed = winner.model;
+        break;
       }
     }
   } catch (err: any) {
@@ -218,7 +223,8 @@ export async function POST(request: Request): Promise<Response> {
     );
   }
 
-  console.log(`[api/process-file] Streaming transcript from ${modelUsed}`);
+  const timeToFirstChunkMs = Date.now() - requestStart;
+  console.log(`[api/process-file] Streaming transcript from ${modelUsed} (first chunk after ${timeToFirstChunkMs}ms)`);
   const encoder = new TextEncoder();
   const activeIterator = iterator;
   const body = new ReadableStream<Uint8Array>({
@@ -246,6 +252,7 @@ export async function POST(request: Request): Promise<Response> {
       "Content-Type": "text/plain; charset=utf-8",
       "Cache-Control": "no-store",
       "x-model-used": modelUsed,
+      "Server-Timing": `gemini-first-chunk;dur=${timeToFirstChunkMs}`,
     },
   });
 }
