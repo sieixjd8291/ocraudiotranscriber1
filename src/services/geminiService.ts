@@ -762,9 +762,9 @@ Treat this segment as a direct continuation of that text. Do NOT repeat or resta
     const clientConfigDuration = performance.now() - clientConfigStart;
     GeminiPerformanceLogger.log("CLIENT_SDK_INITIALIZATION_HANDSHAKE", clientConfigDuration, "Direct GoogleGenAI instance initialized successfully for fallback mode");
 
-    // Always start from the requested model (default: the top of the hierarchy)
-    // and walk the rest in order. A cached "last success" model is deliberately
-    // NOT used here — it made runs silently skip gemini-3.5-flash-lite.
+    // Use the requested manual model alone, or race the two Flash Lite models.
+    // A cached "last success" model is deliberately NOT used here — it made
+    // default runs silently skip gemini-3.5-flash-lite.
     const modelsToTry = buildModelOrder(preferredModel);
 
     let successResult: { text: string; modelUsed: string } | null = null;

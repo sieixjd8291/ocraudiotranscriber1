@@ -4,17 +4,21 @@ import type { ThinkingConfig, ThinkingLevel as ThinkingLevelEnum } from "@google
 
 const ThinkingLevel = {
   MINIMAL: "MINIMAL" as ThinkingLevelEnum.MINIMAL,
+  LOW: "LOW" as ThinkingLevelEnum.LOW,
 };
 
-/**
- * Single source of truth for the transcription model order. Every caller
- * (client SDK path, Express server path, key verification, UI dropdowns)
- * walks this list top to bottom, so the order here IS the fallback order.
- */
+/** All models offered for manual selection and API-key verification. */
 export const GEMINI_MODEL_HIERARCHY = [
   "gemini-3.5-flash-lite",
   "gemini-3.1-flash-lite",
+  "gemini-3.8-flash",
+  "gemini-3.7-flash",
+  "gemini-3.6-flash",
+  "gemini-3.5-flash",
 ] as const;
+
+/** Automatic switching is limited to the two Flash Lite models. */
+const FLASH_LITE_FALLBACK = ["gemini-3.5-flash-lite", "gemini-3.1-flash-lite"] as const;
 
 export type GeminiModelId = (typeof GEMINI_MODEL_HIERARCHY)[number];
 
@@ -23,16 +27,21 @@ export const PRIMARY_GEMINI_MODEL: GeminiModelId = GEMINI_MODEL_HIERARCHY[0];
 export const GEMINI_MODEL_NAMES: Record<GeminiModelId, string> = {
   "gemini-3.5-flash-lite": "Gemini 3.5 Flash Lite",
   "gemini-3.1-flash-lite": "Gemini 3.1 Flash Lite",
+  "gemini-3.8-flash": "Gemini 3.8 Flash",
+  "gemini-3.7-flash": "Gemini 3.7 Flash",
+  "gemini-3.6-flash": "Gemini 3.6 Flash",
+  "gemini-3.5-flash": "Gemini 3.5 Flash",
 };
 
 export function isKnownGeminiModel(model: string | null | undefined): model is GeminiModelId {
   return !!model && (GEMINI_MODEL_HIERARCHY as readonly string[]).includes(model);
 }
 
-/** Requested model first, then the rest of the hierarchy in order (no duplicates). */
+/** Manual Flash choices run alone; only Flash Lite selections switch automatically. */
 export function buildModelOrder(preferredModel?: string | null): string[] {
   const start = isKnownGeminiModel(preferredModel) ? preferredModel : PRIMARY_GEMINI_MODEL;
-  return [start, ...GEMINI_MODEL_HIERARCHY.filter((m) => m !== start)];
+  if (!FLASH_LITE_FALLBACK.some((model) => model === start)) return [start];
+  return [start, ...FLASH_LITE_FALLBACK.filter((model) => model !== start)];
 }
 
 /**
@@ -45,6 +54,10 @@ export function buildModelOrder(preferredModel?: string | null): string[] {
 const THINKING_CONFIG_BY_MODEL: Record<GeminiModelId, ThinkingConfig> = {
   "gemini-3.5-flash-lite": { thinkingLevel: ThinkingLevel.MINIMAL },
   "gemini-3.1-flash-lite": { thinkingBudget: 0 },
+  "gemini-3.8-flash": { thinkingLevel: ThinkingLevel.LOW },
+  "gemini-3.7-flash": { thinkingLevel: ThinkingLevel.LOW },
+  "gemini-3.6-flash": { thinkingLevel: ThinkingLevel.MINIMAL },
+  "gemini-3.5-flash": { thinkingLevel: ThinkingLevel.MINIMAL },
 };
 
 export function getThinkingConfig(model: string): ThinkingConfig | undefined {

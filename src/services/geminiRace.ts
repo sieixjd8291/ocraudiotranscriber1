@@ -48,13 +48,9 @@ export class FirstChunkTimeoutError extends Error {
   }
 }
 
-/** Hedge within 5–8s and stop waiting on a stalled model after 10s. */
-export function raceTimingsFor(fileBytes: number): { hedgeAfterMs: number; firstChunkTimeoutMs: number } {
-  const mb = fileBytes / (1024 * 1024);
-  return {
-    hedgeAfterMs: Math.round(Math.min(8000, 5000 + mb * 500)),
-    firstChunkTimeoutMs: 10000,
-  };
+/** Start the other Flash Lite model after five seconds without transcript text. */
+export function raceTimingsFor(_fileBytes: number): { hedgeAfterMs: number; firstChunkTimeoutMs: number } {
+  return { hedgeAfterMs: 5000, firstChunkTimeoutMs: 10000 };
 }
 
 export function raceToFirstChunk<T>(options: RaceOptions<T>): Promise<{ winner: RaceWinner<T> | null; errors: RaceError[] }> {
