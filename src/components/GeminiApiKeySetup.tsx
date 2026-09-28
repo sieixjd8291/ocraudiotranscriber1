@@ -2,7 +2,6 @@ import { useState, useEffect } from "react";
 import { createPortal } from "react-dom";
 import { Key, CheckCircle2, Loader2, X, ExternalLink, ArrowRight, ShieldCheck, Trash2 } from "lucide-react";
 import { motion, AnimatePresence } from "motion/react";
-import { GEMINI_MODEL_HIERARCHY } from "../services/geminiModels";
 
 interface GeminiApiKeySetupProps {
   apiKey: string;
@@ -28,7 +27,7 @@ export function GeminiApiKeySetup({ apiKey, setApiKey }: GeminiApiKeySetupProps)
   useEffect(() => {
     if (!showModal) return;
     const handleKeyDown = (e: KeyboardEvent) => {
-      if (e.key === "Escape") {
+      if (e.key === "Escape" && !isVerifying) {
         e.stopPropagation();
         setShowModal(false);
       }
@@ -37,7 +36,7 @@ export function GeminiApiKeySetup({ apiKey, setApiKey }: GeminiApiKeySetupProps)
     return () => {
       document.removeEventListener("keydown", handleKeyDown);
     };
-  }, [showModal]);
+  }, [showModal, isVerifying]);
 
   const openSettingsModal = () => {
     setTempKey(localStorage.getItem("gemini_api_key") || "");
@@ -45,59 +44,35 @@ export function GeminiApiKeySetup({ apiKey, setApiKey }: GeminiApiKeySetupProps)
     setShowModal(true);
   };
 
-  const verifyGeminiKey = async (keyToVerify: string): Promise<boolean> => {
-    const tryModel = async (model: string): Promise<{ ok: boolean; status?: number; errorText?: string }> => {
-      const controller = new AbortController();
-      const timeoutId = setTimeout(() => controller.abort(), 5000);
-      try {
-        const response = await fetch(
-          `https://generativelanguage.googleapis.com/v1beta/models/${model}:generateContent?key=${encodeURIComponent(keyToVerify)}`,
-          {
-            method: "POST",
-            headers: {
-              "Content-Type": "application/json",
-            },
-            body: JSON.stringify({
-              contents: [{ parts: [{ text: "Hi" }] }],
-            }),
-            signal: controller.signal,
-          }
-        );
-        clearTimeout(timeoutId);
-        if (response.ok) {
-          return { ok: true };
-        }
-        const text = await response.text();
-        return { ok: false, status: response.status, errorText: text };
-      } catch (err: any) {
-        clearTimeout(timeoutId);
-        return { ok: false, errorText: err.message || String(err) };
-      }
-    };
+  const verifyGeminiKey = async (keyToVerify: string): Promise<void> => {
+    const controller = new AbortController();
+    const timeoutId = window.setTimeout(() => controller.abort(), 10000);
+    try {
+      const response = await fetch("https://generativelanguage.googleapis.com/v1beta/models?pageSize=1", {
+        headers: { "x-goog-api-key": keyToVerify },
+        signal: controller.signal,
+        cache: "no-store",
+      });
+      if (response.ok) return;
 
-    // Try standard models sequentially with safe timeout and error checks
-    const modelsToTry = GEMINI_MODEL_HIERARCHY;
-    for (const model of modelsToTry) {
-      console.log(`[Gemini Verify] Testing key with model: ${model}`);
-      const res = await tryModel(model);
-      if (res.ok) {
-        return true;
+      if (response.status === 400 || response.status === 401) {
+        throw new Error("This Gemini API key is invalid. Check the key and try again.");
       }
-      
-      // If it failed because of key validity, abort immediately.
-      // Standard Google API responses for invalid key can be 400, 401, or 403.
-      const isInvalidKey = res.status === 400 || res.status === 403 || res.status === 401 || 
-                           (res.errorText && (
-                             res.errorText.toLowerCase().includes("invalid") || 
-                             res.errorText.toLowerCase().includes("not valid") || 
-                             res.errorText.toLowerCase().includes("permission")
-                           ));
-      if (isInvalidKey) {
-        console.warn(`[Gemini Verify] API Key invalid or permissions rejected with status ${res.status}:`, res.errorText);
-        return false;
+      if (response.status === 403) {
+        throw new Error("This key cannot access the Gemini API. Check its API restrictions and project permissions.");
       }
+      throw new Error("Gemini could not verify the key right now. Please try again shortly.");
+    } catch (error) {
+      if (error instanceof DOMException && error.name === "AbortError") {
+        throw new Error("Gemini key verification timed out. Please try again.");
+      }
+      if (error instanceof TypeError) {
+        throw new Error("Could not reach Gemini to verify the key. Check your connection and try again.");
+      }
+      throw error;
+    } finally {
+      clearTimeout(timeoutId);
     }
-    return false;
   };
 
   const Banner = apiKey ? (
@@ -173,22 +148,12 @@ export function GeminiApiKeySetup({ apiKey, setApiKey }: GeminiApiKeySetupProps)
     setIsVerifying(true);
     setError(null);
     try {
-      const isValid = await verifyGeminiKey(trimmed);
-      if (isValid) {
-        localStorage.setItem("gemini_api_key", trimmed);
-        setApiKey(trimmed);
-        
-        // Immediately pre-warm the connection to ensure fast startup on the first transcription
-        import("../services/geminiService").then(({ prewarmGeminiClient }) => {
-          prewarmGeminiClient();
-        }).catch(() => {});
-        
-        setShowModal(false);
-      } else {
-        setError("Invalid Gemini API Key. Please verify and try again.");
-      }
-    } catch (err: any) {
-      setError(err.message || "Failed to verify Gemini API Key.");
+      await verifyGeminiKey(trimmed);
+      localStorage.setItem("gemini_api_key", trimmed);
+      setApiKey(trimmed);
+      setShowModal(false);
+    } catch (err) {
+      setError(err instanceof Error ? err.message : "Could not save the Gemini API key. Please try again.");
     } finally {
       setIsVerifying(false);
     }
@@ -203,7 +168,7 @@ export function GeminiApiKeySetup({ apiKey, setApiKey }: GeminiApiKeySetupProps)
             animate={{ opacity: 1 }}
             exit={{ opacity: 0 }}
             transition={{ duration: 0.2 }}
-            onClick={() => setShowModal(false)}
+            onClick={() => { if (!isVerifying) setShowModal(false); }}
             className="absolute inset-0 bg-slate-900/60 backdrop-blur-xs cursor-pointer"
           />
           
@@ -222,7 +187,9 @@ export function GeminiApiKeySetup({ apiKey, setApiKey }: GeminiApiKeySetupProps)
               </h2>
               <button 
                 onClick={() => setShowModal(false)}
-                className="text-slate-400 hover:text-slate-600 dark:hover:text-slate-200 transition-colors p-1 rounded-md hover:bg-slate-100 dark:hover:bg-slate-800 cursor-pointer"
+                disabled={isVerifying}
+                aria-label="Close Gemini settings"
+                className="text-slate-400 hover:text-slate-600 dark:hover:text-slate-200 transition-colors p-1 rounded-md hover:bg-slate-100 dark:hover:bg-slate-800 cursor-pointer disabled:opacity-50"
               >
                 <X className="w-5 h-5" />
               </button>
@@ -231,7 +198,7 @@ export function GeminiApiKeySetup({ apiKey, setApiKey }: GeminiApiKeySetupProps)
             {/* Content */}
             <div className="px-6 py-5 flex flex-col gap-4">
               <div className="text-xs text-slate-600 dark:text-slate-300 leading-relaxed">
-                Connect your Gemini API Key. Since you are running a static deployment, this ensures transcription and OCR requests are executed seamlessly directly from your browser.
+                Connect your Gemini API key. We verify the key without starting a transcription or using a generation model.
               </div>
 
               <div className="bg-slate-50 dark:bg-slate-950 rounded-xl p-3 border border-slate-100 dark:border-slate-800 flex flex-col gap-3">
@@ -259,7 +226,7 @@ export function GeminiApiKeySetup({ apiKey, setApiKey }: GeminiApiKeySetupProps)
                   }}
                   disabled={isVerifying}
                   onKeyDown={(e) => {
-                    if (e.key === 'Enter') handleSave();
+                    if (e.key === 'Enter' && !e.nativeEvent.isComposing && e.keyCode !== 229 && !isVerifying) handleSave();
                   }}
                   className={`w-full bg-white dark:bg-slate-900 border ${error ? 'border-red-400 focus:ring-red-500/20' : 'border-slate-300 dark:border-slate-800 focus:ring-indigo-500/20'} rounded-xl px-4 py-2.5 text-xs text-slate-800 dark:text-slate-100 outline-none focus:border-indigo-500 transition-all shadow-xs`}
                 />
@@ -280,7 +247,8 @@ export function GeminiApiKeySetup({ apiKey, setApiKey }: GeminiApiKeySetupProps)
                   setApiKey("");
                   setTempKey("");
                 }}
-                className="flex items-center justify-center gap-1.5 h-10 px-4 text-xs font-bold text-red-600 hover:text-red-700 hover:bg-red-50 dark:hover:bg-red-950/20 rounded-xl transition-all cursor-pointer shadow-xs border border-red-100 dark:border-red-950/30 w-full sm:w-auto shrink-0 whitespace-nowrap"
+                disabled={isVerifying}
+                className="flex items-center justify-center gap-1.5 h-10 px-4 text-xs font-bold text-red-600 disabled:opacity-50 hover:text-red-700 hover:bg-red-50 dark:hover:bg-red-950/20 rounded-xl transition-all cursor-pointer shadow-xs border border-red-100 dark:border-red-950/30 w-full sm:w-auto shrink-0 whitespace-nowrap"
               >
                 <Trash2 className="w-4 h-4 text-red-500 shrink-0" />
                 Remove Key
