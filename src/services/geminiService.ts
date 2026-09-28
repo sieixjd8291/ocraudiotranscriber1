@@ -197,7 +197,15 @@ function isTransientError(error: any): boolean {
     return false;
   }
 
+  // The SDK surfaces 503s as "Retryable HTTP Error:" with an empty status text,
+  // so the numeric code only lives on the error object, not in the message.
+  const status = Number(error.status ?? error.code ?? error.response?.status);
+  if ([429, 500, 502, 503, 504].includes(status)) return true;
+
   return (
+    msg.includes('retryable') ||
+    msg.includes('unavailable') ||
+    msg.includes('high demand') ||
     msg.includes('429') ||
     msg.includes('500') ||
     msg.includes('502') ||
