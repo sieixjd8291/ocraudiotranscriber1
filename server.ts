@@ -9,6 +9,12 @@ import { Cleanvoice } from "@cleanvoice/cleanvoice-sdk";
 import fs from "fs";
 import crypto from "crypto";
 import { WebSocketServer, WebSocket } from "ws";
+import {
+  PRIMARY_GEMINI_MODEL,
+  buildModelOrder,
+  getThinkingConfig,
+  isInvalidArgumentError,
+} from "./src/services/geminiModels";
 
 dotenv.config();
 
@@ -1118,7 +1124,7 @@ async function startServer() {
   app.post("/api/prewarm", async (req, res) => {
     try {
       const { model } = req.body;
-      const targetModel = model || "gemini-3.5-flash";
+      const targetModel = model || PRIMARY_GEMINI_MODEL;
       const rawKey = process.env.GEMINI_API_KEY || req.headers["x-gemini-api-key"] || "";
       const apiKey = Array.isArray(rawKey) ? rawKey[0] : rawKey;
       if (!apiKey || typeof apiKey !== 'string' || !apiKey.trim()) {
@@ -1151,9 +1157,7 @@ async function startServer() {
         config: {
           maxOutputTokens: 1,
           temperature: 0.0,
-          thinkingConfig: {
-            thinkingBudget: 0
-          }
+          thinkingConfig: getThinkingConfig(targetModel)
         }
       }).catch((e: any) => {
         const rawMsg = e.message || (typeof e === "object" ? JSON.stringify(e) : String(e));
@@ -1227,19 +1231,7 @@ async function startServer() {
         }
       }
 
-      const initialModel = preferredModel || "gemini-3.5-flash-lite";
-      let modelsToTry = [initialModel];
-      const fallbackHierarchy = [
-        "gemini-3.5-flash-lite",
-        "gemini-3.1-flash-lite",
-        "gemini-3.6-flash",
-        "gemini-3.5-flash"
-      ];
-      for (const model of fallbackHierarchy) {
-        if (!modelsToTry.includes(model)) {
-          modelsToTry.push(model);
-        }
-      }
+      const modelsToTry = buildModelOrder(preferredModel);
 
       const buildContents = () => {
         const parts: any[] = [];
@@ -1286,7 +1278,7 @@ async function startServer() {
       }
 
       let firstChunkText = "";
-      const MAX_ATTEMPTS_PER_MODEL = 3;
+      const MAX_ATTEMPTS_PER_MODEL = 2;
       const MAX_PASSES = 2;
 
       passLoop: for (let pass = 1; pass <= MAX_PASSES; pass++) {
@@ -1298,6 +1290,7 @@ async function startServer() {
         await new Promise(r => setTimeout(r, 6000));
       }
       modelLoop: for (const model of modelsToTry) {
+        let useModelDefaultThinking = false;
         for (let attempt = 1; attempt <= MAX_ATTEMPTS_PER_MODEL; attempt++) {
           try {
             console.log(`[Server Gemini] Attempting streaming generation: ${model} (attempt ${attempt}/${MAX_ATTEMPTS_PER_MODEL})`);
@@ -1307,9 +1300,7 @@ async function startServer() {
               config: {
                 systemInstruction: prompt || "You are an expert audio transcription assistant. Please perform direct, verbatim transcription of the attached media.",
                 temperature: 0.0,
-                thinkingConfig: {
-                  thinkingBudget: 0
-                }
+                ...(useModelDefaultThinking ? {} : { thinkingConfig: getThinkingConfig(model) }),
               }
             });
             // Pull the first chunk before committing response headers: Gemini often
@@ -1335,6 +1326,13 @@ async function startServer() {
               throw err;
             }
 
+            if (isInvalidArgumentError(err) && !useModelDefaultThinking) {
+              console.log(`[Server Gemini] ${model} rejected the request config (400). Retrying once with model-default thinking settings...`);
+              useModelDefaultThinking = true;
+              attempt--;
+              continue;
+            }
+
             const errStatus = Number(err.status ?? err.code);
             const isOverloaded = [429, 500, 502, 503, 504].includes(errStatus) ||
                                  errMsg.includes('retryable') ||
@@ -1347,7 +1345,7 @@ async function startServer() {
                                  errMsg.includes('deadline') ||
                                  errMsg.includes('internal');
             if (isOverloaded && attempt < MAX_ATTEMPTS_PER_MODEL) {
-              const delayMs = 2000 * Math.pow(2, attempt - 1) + Math.floor(Math.random() * 1000);
+              const delayMs = 1000 + Math.floor(Math.random() * 1000);
               console.log(`[Server Gemini] ${model} is temporarily unavailable, retrying in ${delayMs}ms...`);
               await new Promise(r => setTimeout(r, delayMs));
               continue;

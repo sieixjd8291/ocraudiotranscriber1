@@ -3,6 +3,12 @@
 import { GoogleGenAI } from "@google/genai";
 import { isAudioFile, sniffAudioContainer } from '../utils/audioUtils';
 import { MemoryTracker } from '../utils/memoryTracker';
+import {
+  PRIMARY_GEMINI_MODEL,
+  buildModelOrder,
+  getThinkingConfig,
+  isInvalidArgumentError,
+} from './geminiModels';
 
 /**
  * Encodes a contiguous slice of a byte array to a Base64 string WITHOUT relying
@@ -132,7 +138,7 @@ export async function prewarmGeminiClient(specificModel?: string) {
     // processFile fallback hierarchy only when the primary model actually fails.
     const modelsToWarm = specificModel
       ? [specificModel]
-      : ["gemini-3.5-flash-lite"];
+      : [PRIMARY_GEMINI_MODEL];
 
     for (const model of modelsToWarm) {
       const modelWarmingStart = performance.now();
@@ -142,7 +148,7 @@ export async function prewarmGeminiClient(specificModel?: string) {
         config: { 
           maxOutputTokens: 1, 
           temperature: 0.0,
-          thinkingConfig: { thinkingBudget: 0 }
+          thinkingConfig: getThinkingConfig(model)
         }
       }).then(() => {
         const duration = performance.now() - modelWarmingStart;
@@ -166,7 +172,7 @@ export async function prewarmGeminiClient(specificModel?: string) {
           "Content-Type": "application/json",
           "X-Gemini-API-Key": apiKey
         },
-        body: JSON.stringify({ model: specificModel || "gemini-3.5-flash" })
+        body: JSON.stringify({ model: specificModel || PRIMARY_GEMINI_MODEL })
       }).then(async (res) => {
         const duration = performance.now() - serverPrewarmStart;
         if (res.ok) {
@@ -342,7 +348,7 @@ export async function processFile(
   file: File | Blob,
   mimeType: string,
   onRetry?: (attempt: number, maxRetries: number, delayMs: number, error: any) => void,
-  preferredModel: string = "gemini-3.5-flash-lite",
+  preferredModel: string = PRIMARY_GEMINI_MODEL,
   signal?: AbortSignal,
   onChunk?: (text: string) => void,
   contextHint?: string
@@ -722,21 +728,10 @@ Treat this segment as a direct continuation of that text. Do NOT repeat or resta
     const clientConfigDuration = performance.now() - clientConfigStart;
     GeminiPerformanceLogger.log("CLIENT_SDK_INITIALIZATION_HANDSHAKE", clientConfigDuration, "Direct GoogleGenAI instance initialized successfully for fallback mode");
 
-    const lastSuccessModel = typeof window !== "undefined" ? localStorage.getItem("gemini_last_success_model") : null;
-    const initialModel = preferredModel || lastSuccessModel || "gemini-3.5-flash-lite";
-
-    let modelsToTry = [initialModel];
-    const fallbackHierarchy = [
-      "gemini-3.5-flash-lite",
-      "gemini-3.1-flash-lite",
-      "gemini-3.6-flash",
-      "gemini-3.5-flash"
-    ];
-    for (const model of fallbackHierarchy) {
-      if (!modelsToTry.includes(model)) {
-        modelsToTry.push(model);
-      }
-    }
+    // Always start from the requested model (default: the top of the hierarchy)
+    // and walk the rest in order. A cached "last success" model is deliberately
+    // NOT used here — it made runs silently skip gemini-3.5-flash-lite.
+    const modelsToTry = buildModelOrder(preferredModel);
 
     let successResult: { text: string; modelUsed: string } | null = null;
     const errors: any[] = [];
@@ -757,7 +752,11 @@ Treat this segment as a direct continuation of that text. Do NOT repeat or resta
       }
 
       let attempt = 0;
-      const maxRetries = 3;
+      // One quick retry on a 503/overload, then move to the next model in the
+      // hierarchy instead of burning ~25s of backoff on a model that is busy.
+      // The outer pass loop does a cooled-down second sweep if ALL are busy.
+      const maxRetries = 2;
+      let useModelDefaultThinking = false;
 
       while (attempt < maxRetries) {
         attempt++;
@@ -787,9 +786,7 @@ Treat this segment as a direct continuation of that text. Do NOT repeat or resta
             config: {
               systemInstruction: prompt,
               temperature: 0.0,
-              thinkingConfig: {
-                thinkingBudget: 0
-              }
+              ...(useModelDefaultThinking ? {} : { thinkingConfig: getThinkingConfig(currentModel) }),
             }
           });
 
@@ -871,8 +868,18 @@ Treat this segment as a direct continuation of that text. Do NOT repeat or resta
             throw new Error(cleanMessage);
           }
 
+          // A 400 means the request shape was rejected (e.g. an unsupported
+          // thinking parameter). Retry this model once with its default
+          // thinking settings before falling back to the next model.
+          if (isInvalidArgumentError(err) && !useModelDefaultThinking) {
+            console.warn(`[Gemini client-side] ${currentModel} rejected the request config (400). Retrying once with model-default thinking settings...`);
+            useModelDefaultThinking = true;
+            attempt--;
+            continue;
+          }
+
           if (attempt < maxRetries && isTransientError(err)) {
-            const delayMs = Math.pow(2, attempt) * 1000 + Math.floor(Math.random() * 1000);
+            const delayMs = 1000 + Math.floor(Math.random() * 1000);
             if (onRetry) {
               onRetry(attempt, maxRetries, delayMs, err);
             }
