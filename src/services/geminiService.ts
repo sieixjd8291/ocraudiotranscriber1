@@ -194,6 +194,24 @@ export async function prewarmGeminiClient(specificModel?: string) {
   }
 }
 
+function waitWithAbort(ms: number, signal?: AbortSignal): Promise<void> {
+  return new Promise<void>((resolve, reject) => {
+    if (signal?.aborted) {
+      reject(new DOMException("The user aborted a request.", "AbortError"));
+      return;
+    }
+    const onAbort = () => {
+      clearTimeout(timeoutId);
+      reject(new DOMException("The user aborted a request.", "AbortError"));
+    };
+    const timeoutId = setTimeout(() => {
+      signal?.removeEventListener("abort", onAbort);
+      resolve();
+    }, ms);
+    signal?.addEventListener("abort", onAbort, { once: true });
+  });
+}
+
 function isTransientError(error: any): boolean {
   if (!error) return false;
   if (error.name === 'AbortError') return false;
@@ -736,15 +754,24 @@ Treat this segment as a direct continuation of that text. Do NOT repeat or resta
     let successResult: { text: string; modelUsed: string } | null = null;
     const errors: any[] = [];
 
-    const MAX_PASSES = 2;
+    // When Google returns 503 "high demand" for EVERY model, retrying within a
+    // few seconds just gets another 503. Sweep the whole hierarchy quickly, then
+    // back off with growing cool-downs between sweeps (~2 minutes in total).
+    const SWEEP_COOLDOWNS_MS = [10000, 20000, 40000, 60000];
+    const MAX_PASSES = SWEEP_COOLDOWNS_MS.length + 1;
     for (let pass = 1; pass <= MAX_PASSES && !successResult; pass++) {
     if (pass > 1) {
-      // Only sweep again if every model failed with a transient overload (503/500/429);
-      // Google capacity spikes usually clear after a short cool-down.
       if (!errors.every(e => isTransientError(e.error))) break;
-      console.log(`[Gemini client-side] All models busy, cooling down 6s before pass ${pass}/${MAX_PASSES}...`);
+      const cooldownMs = SWEEP_COOLDOWNS_MS[pass - 2];
+      console.log(`[Gemini client-side] All models busy, cooling down ${cooldownMs / 1000}s before sweep ${pass}/${MAX_PASSES}...`);
+      onRetry?.(
+        pass - 1,
+        MAX_PASSES - 1,
+        cooldownMs,
+        new Error(`All Gemini models are busy right now (Google high demand). Retrying in ${cooldownMs / 1000}s (sweep ${pass}/${MAX_PASSES})...`),
+      );
       errors.length = 0;
-      await new Promise(r => setTimeout(r, 6000));
+      await waitWithAbort(cooldownMs, signal);
     }
     for (const currentModel of modelsToTry) {
       if (signal?.aborted) {
@@ -752,10 +779,10 @@ Treat this segment as a direct continuation of that text. Do NOT repeat or resta
       }
 
       let attempt = 0;
-      // One quick retry on a 503/overload, then move to the next model in the
-      // hierarchy instead of burning ~25s of backoff on a model that is busy.
-      // The outer pass loop does a cooled-down second sweep if ALL are busy.
-      const maxRetries = 2;
+      // One attempt per model per sweep: an immediate retry of a model that just
+      // said "high demand" only returned another 503. The outer sweep loop owns
+      // the cool-down timing. (A 400 still gets one config-fallback retry below.)
+      const maxRetries = 1;
       let useModelDefaultThinking = false;
 
       while (attempt < maxRetries) {
@@ -824,11 +851,6 @@ Treat this segment as a direct continuation of that text. Do NOT repeat or resta
           GeminiPerformanceLogger.log("CLIENT_SDK_GENERATE_CONTENT_LATENCY", sdkInvokeDuration, "Direct stream API request finalized", currentModel);
 
           if (accumulatedText) {
-            // Cache successful model for next runs to skip fallbacks
-            if (typeof window !== "undefined") {
-              localStorage.setItem("gemini_last_success_model", currentModel);
-            }
-
             const totalClientDuration = performance.now() - startTotalProcess;
             GeminiPerformanceLogger.log("CLIENT_TOTAL_FALLBACK_FLOW", totalClientDuration, "Succeeded using fallback route", currentModel);
 
@@ -923,6 +945,11 @@ Treat this segment as a direct continuation of that text. Do NOT repeat or resta
       return successResult;
     }
 
+    if (errors.length > 0 && errors.every(e => isTransientError(e.error))) {
+      throw new Error(
+        "Google's Gemini servers are overloaded for every model right now (503 high demand). Your file and API key are fine — please try again in a few minutes.",
+      );
+    }
     const combined = errors.map(e => `${e.model}: ${e.error.message || e.error}`).join(" | ");
     throw new Error(`All client-side Gemini model fallbacks failed: ${combined}`);
   } finally {
