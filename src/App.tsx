@@ -14,6 +14,7 @@ import { CleanOptions } from "./components/CleanContextMenu";
 import { getAllPersistedFiles, saveAllPersistedFiles, clearAllPersistedFiles, consumeSessionCleanExit } from "./services/dbService";
 import { useSessionCleanup } from "./hooks/useSessionCleanup";
 import { MemoryTracker } from "./utils/memoryTracker";
+import { GEMINI_MODEL_NAMES, PRIMARY_GEMINI_MODEL } from "./services/geminiModels";
 import { evictAudioBufferCache } from "./utils/audioBufferCache";
 import { cleanvoiceBlobCache } from "./utils/cleanvoiceCache";
 import {
@@ -569,13 +570,16 @@ export default function App() {
     }
     setActiveAppTool(tool);
   }, [isOnline]);
-  const [selectedModel, setSelectedModel] = useState<string>(() => {
-    if (typeof window !== "undefined") {
-      const saved = localStorage.getItem("selectedModel");
-      if (saved) return saved;
-    }
-    return "gemini-3.5-flash-lite";
-  });
+  // New transcriptions always start at the top of the model hierarchy. A value
+  // persisted by an older build (e.g. "gemini-3.1-flash-lite") used to linger
+  // in localStorage with no UI to change it, silently skipping 3.5 Flash Lite.
+  const selectedModel = PRIMARY_GEMINI_MODEL;
+  useEffect(() => {
+    try {
+      localStorage.removeItem("selectedModel");
+      localStorage.removeItem("gemini_last_success_model");
+    } catch {}
+  }, []);
   const autoRetry = true;
 
   const [selectedQuality, setSelectedQuality] = useState<"source" | "320" | "192" | "128">(() => {
@@ -593,7 +597,6 @@ export default function App() {
   }, [selectedQuality]);
 
   useEffect(() => {
-    localStorage.setItem("selectedModel", selectedModel);
     if (activeAppTool === "transcribe") {
       const handleInteraction = () => {
         if (typeof window !== "undefined" && "requestIdleCallback" in window) {
@@ -1017,16 +1020,11 @@ export default function App() {
         );
 
         if (!controller.signal.aborted) {
-          const modelDisplayNames: Record<string, string> = {
-            "gemini-3.5-flash-lite": "Gemini 3.5 Flash Lite",
-            "gemini-3.1-flash-lite": "Gemini 3.1 Flash Lite",
-            "gemini-3.6-flash": "Gemini 3.6 Flash",
-            "gemini-3.5-flash": "Gemini 3.5 Flash",
-          };
+          const modelDisplayNames: Record<string, string> = GEMINI_MODEL_NAMES;
           const niceRequested = modelDisplayNames[requestedModel] || requestedModel;
           const niceUsed = modelDisplayNames[modelUsed] || modelUsed;
 
-          if (modelUsed && modelUsed !== requestedModel && modelUsed === "gemini-3.5-flash-lite") {
+          if (modelUsed && modelUsed !== requestedModel && modelUsed === PRIMARY_GEMINI_MODEL) {
             toast.info(`Switched back to ${niceUsed}. The requested model ${niceRequested} might be temporarily unavailable or hit a quota limit.`, {
               duration: 6000,
             });
@@ -1245,7 +1243,7 @@ export default function App() {
       if (isFastTrack && !isExplicitModelSet) {
         updatedItemOverride = updatedItemOverride || fileToQueue;
         if (updatedItemOverride) {
-          updatedItemOverride = { ...updatedItemOverride, preferredModel: "gemini-3.5-flash-lite" };
+          updatedItemOverride = { ...updatedItemOverride, preferredModel: PRIMARY_GEMINI_MODEL };
         }
       }
 
@@ -1259,7 +1257,7 @@ export default function App() {
               ? {
                   ...f,
                   status: "processing",
-                  preferredModel: (isFastTrack && !isExplicitModelSet) ? "gemini-3.5-flash-lite" : (itemOverride?.preferredModel || f.preferredModel),
+                  preferredModel: (isFastTrack && !isExplicitModelSet) ? PRIMARY_GEMINI_MODEL : (itemOverride?.preferredModel || f.preferredModel),
                   retryMessage: undefined,
                   error: undefined,
                   retryAttempts: isAutoAttempt ? (f.retryAttempts || 0) + 1 : 0,

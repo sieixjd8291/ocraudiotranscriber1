@@ -36,6 +36,7 @@ import {
   decodeAudioFile,
 } from "../utils/audioUtils";
 import { deleteCleanvoiceEdit } from "../services/cleanvoiceService";
+import { GEMINI_MODEL_HIERARCHY, GEMINI_MODEL_NAMES } from "../services/geminiModels";
 const WaveformAudioEditor = React.lazy(() => import("./WaveformAudioEditor").then(m => ({ default: m.WaveformAudioEditor })));
 
 export function truncateMiddle(
@@ -104,13 +105,10 @@ const COMPRESSION_OPTIONS = [
   { kbps: 192, label: "192 kbps", desc: "High Quality" },
 ];
 
-const AVAILABLE_MODELS = [
-  { id: "gemini-3.5-flash-lite", name: "Gemini 3.5 Flash Lite" },
-  { id: "gemini-3.1-flash-lite", name: "Gemini 3.1 Flash Lite" },
-  { id: "gemini-3.6-flash", name: "Gemini 3.6 Flash" },
-  { id: "gemini-3.5-flash", name: "Gemini 3.5 Flash" },
-  { id: "gemini-3.1-pro", name: "Gemini 3.1 Pro" },
-];
+const AVAILABLE_MODELS = GEMINI_MODEL_HIERARCHY.map((id) => ({
+  id,
+  name: GEMINI_MODEL_NAMES[id],
+}));
 
 function ResultCardImpl({
   item,
@@ -2111,13 +2109,8 @@ function ResultCardImpl({
                             const currentModelStr =
                               item.preferredModel || item.modelUsed || "";
                             const isCurrent =
-                              currentModelStr.toLowerCase() ===
-                                model.id.toLowerCase() ||
-                              (currentModelStr.toLowerCase().includes("lite") &&
-                                model.id.includes("lite")) ||
-                              (currentModelStr.toLowerCase().includes("pro") &&
-                                model.id.includes("pro") &&
-                                model.id.includes("3.1-pro-preview"));
+                              currentModelStr.toLowerCase().trim() ===
+                              model.id;
                             return (
                               <button
                                 key={model.id}
@@ -2215,13 +2208,8 @@ function ResultCardImpl({
                                   {AVAILABLE_MODELS.map((model) => {
                                     const usedLower = item.modelUsed?.toLowerCase().trim() || "";
                                     const isCurrent =
-                                      usedLower === model.id.toLowerCase() ||
-                                      usedLower === model.name.toLowerCase() ||
-                                      (usedLower.includes("3.5-flash-lite") && model.id === "gemini-3.5-flash-lite") ||
-                                      (usedLower.includes("3.1-flash-lite") && model.id === "gemini-3.1-flash-lite") ||
-                                      (usedLower.includes("3.6-flash") && model.id === "gemini-3.6-flash") ||
-                                      (usedLower.includes("3.5-flash") && !usedLower.includes("lite") && model.id === "gemini-3.5-flash") ||
-                                      (usedLower.includes("3.1-pro") && model.id === "gemini-3.1-pro");
+                                      usedLower === model.id ||
+                                      usedLower === model.name.toLowerCase();
                                     return (
                                       <button
                                         key={model.id}

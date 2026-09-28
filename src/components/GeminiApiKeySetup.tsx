@@ -2,6 +2,7 @@ import { useState, useEffect } from "react";
 import { createPortal } from "react-dom";
 import { Key, CheckCircle2, Loader2, X, ExternalLink, ArrowRight, ShieldCheck, Trash2 } from "lucide-react";
 import { motion, AnimatePresence } from "motion/react";
+import { GEMINI_MODEL_HIERARCHY } from "../services/geminiModels";
 
 interface GeminiApiKeySetupProps {
   apiKey: string;
@@ -75,7 +76,7 @@ export function GeminiApiKeySetup({ apiKey, setApiKey }: GeminiApiKeySetupProps)
     };
 
     // Try standard models sequentially with safe timeout and error checks
-    const modelsToTry = ["gemini-3.5-flash-lite", "gemini-3.1-flash-lite", "gemini-3.6-flash", "gemini-3.5-flash"];
+    const modelsToTry = GEMINI_MODEL_HIERARCHY;
     for (const model of modelsToTry) {
       console.log(`[Gemini Verify] Testing key with model: ${model}`);
       const res = await tryModel(model);
