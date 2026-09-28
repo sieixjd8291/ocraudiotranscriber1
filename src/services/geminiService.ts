@@ -605,12 +605,12 @@ Treat this segment as a direct continuation of that text. Do NOT repeat or resta
         try {
           serverError = JSON.parse(errorText);
         } catch {}
-        // The server already swept every model with cool-downs; repeating the
-        // same sweeps from the browser would only double the wait.
-        if (serverError.code === "ALL_MODELS_OVERLOADED") {
-          const overloadError = new Error(serverError.error || "Gemini is overloaded for every model right now.");
-          (overloadError as any).isFinal = true;
-          throw overloadError;
+        // The server already tried both Flash Lite models; repeating the same
+        // requests in the browser would only delay a useful error message.
+        if (serverError.code === "ALL_MODELS_OVERLOADED" || serverError.code === "ALL_MODELS_FAILED") {
+          const modelsError = new Error(serverError.error || "Both Gemini Flash Lite models are unavailable right now.");
+          (modelsError as any).isFinal = true;
+          throw modelsError;
         }
         if (serverError.code === "AUTH") {
           const authError = new Error(
@@ -770,25 +770,6 @@ Treat this segment as a direct continuation of that text. Do NOT repeat or resta
     let successResult: { text: string; modelUsed: string } | null = null;
     const errors: any[] = [];
 
-    // When Google returns 503 "high demand" for EVERY model, retrying within a
-    // few seconds just gets another 503. Sweep the whole hierarchy quickly, then
-    // back off with growing cool-downs between sweeps (~2 minutes in total).
-    const SWEEP_COOLDOWNS_MS = [10000, 20000, 40000, 60000];
-    const MAX_PASSES = SWEEP_COOLDOWNS_MS.length + 1;
-    for (let pass = 1; pass <= MAX_PASSES && !successResult; pass++) {
-    if (pass > 1) {
-      if (!errors.every(e => isTransientError(e.error))) break;
-      const cooldownMs = SWEEP_COOLDOWNS_MS[pass - 2];
-      console.log(`[Gemini client-side] All models busy, cooling down ${cooldownMs / 1000}s before sweep ${pass}/${MAX_PASSES}...`);
-      onRetry?.(
-        pass - 1,
-        MAX_PASSES - 1,
-        cooldownMs,
-        new Error(`All Gemini models are busy right now (Google high demand). Retrying in ${cooldownMs / 1000}s (sweep ${pass}/${MAX_PASSES})...`),
-      );
-      errors.length = 0;
-      await waitWithAbort(cooldownMs, signal);
-    }
     if (signal?.aborted) {
       throw new DOMException("The user aborted a request.", "AbortError");
     }
@@ -889,7 +870,6 @@ Treat this segment as a direct continuation of that text. Do NOT repeat or resta
         console.warn(`[Gemini client-side] Stream from ${currentModel} failed mid-way:`, err);
         errors.push({ model: currentModel, error: err });
       }
-    }
     }
 
     if (successResult) {

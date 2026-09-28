@@ -15,6 +15,7 @@ import {
   getThinkingConfig,
   isInvalidArgumentError,
 } from "./src/services/geminiModels";
+import { raceTimingsFor, raceToFirstChunk } from "./src/services/geminiRace";
 
 dotenv.config();
 
@@ -1278,85 +1279,40 @@ async function startServer() {
       }
 
       let firstChunkText = "";
-      const MAX_ATTEMPTS_PER_MODEL = 2;
-      const MAX_PASSES = 2;
-
-      passLoop: for (let pass = 1; pass <= MAX_PASSES; pass++) {
-      if (pass > 1) {
-        // Every model reported overload: Google 503 spikes usually clear within
-        // seconds, so cool down once and sweep the whole model list again.
-        console.log(`[Server Gemini] All models busy, cooling down 6s before pass ${pass}/${MAX_PASSES}...`);
-        errors.length = 0;
-        await new Promise(r => setTimeout(r, 6000));
-      }
-      modelLoop: for (const model of modelsToTry) {
-        let useModelDefaultThinking = false;
-        for (let attempt = 1; attempt <= MAX_ATTEMPTS_PER_MODEL; attempt++) {
-          try {
-            console.log(`[Server Gemini] Attempting streaming generation: ${model} (attempt ${attempt}/${MAX_ATTEMPTS_PER_MODEL})`);
-            const attemptStream = await ai.models.generateContentStream({
-              model: model,
-              contents: buildContents(),
-              config: {
-                systemInstruction: prompt || "You are an expert audio transcription assistant. Please perform direct, verbatim transcription of the attached media.",
-                temperature: 0.0,
-                ...(useModelDefaultThinking ? {} : { thinkingConfig: getThinkingConfig(model) }),
-              }
-            });
-            // Pull the first chunk before committing response headers: Gemini often
-            // reports 503 UNAVAILABLE on the first read, and once headers are sent
-            // we can no longer fall back to another model.
-            const iterator = attemptStream[Symbol.asyncIterator]();
-            const first = await iterator.next();
-            firstChunkText = first.done ? "" : (first.value?.text || "");
-            stream = { [Symbol.asyncIterator]: () => iterator };
-            modelUsed = model;
-            break passLoop;
-          } catch (err: any) {
-            const cleanErrorMessage = err.message || String(err);
-            console.log(`[Server Gemini] Model ${model} failed to generate content (info: ${cleanErrorMessage})`);
-
-            const errMsg = cleanErrorMessage.toLowerCase();
-            const isInvalidKey = errMsg.includes('key not valid') ||
-                                 errMsg.includes('api_key_invalid') ||
-                                 errMsg.includes('invalid api key') ||
-                                 errMsg.includes('permission_denied') ||
-                                 errMsg.includes('403');
-            if (isInvalidKey) {
-              throw err;
-            }
-
-            if (isInvalidArgumentError(err) && !useModelDefaultThinking) {
-              console.log(`[Server Gemini] ${model} rejected the request config (400). Retrying once with model-default thinking settings...`);
-              useModelDefaultThinking = true;
-              attempt--;
-              continue;
-            }
-
-            const errStatus = Number(err.status ?? err.code);
-            const isOverloaded = [429, 500, 502, 503, 504].includes(errStatus) ||
-                                 errMsg.includes('retryable') ||
-                                 errMsg.includes('503') ||
-                                 errMsg.includes('500') ||
-                                 errMsg.includes('504') ||
-                                 errMsg.includes('unavailable') ||
-                                 errMsg.includes('overloaded') ||
-                                 errMsg.includes('high demand') ||
-                                 errMsg.includes('deadline') ||
-                                 errMsg.includes('internal');
-            if (isOverloaded && attempt < MAX_ATTEMPTS_PER_MODEL) {
-              const delayMs = 1000 + Math.floor(Math.random() * 1000);
-              console.log(`[Server Gemini] ${model} is temporarily unavailable, retrying in ${delayMs}ms...`);
-              await new Promise(r => setTimeout(r, delayMs));
-              continue;
-            }
-
-            errors.push({ model, error: err, overloaded: isOverloaded });
-            continue modelLoop;
-          }
+      const requestController = new AbortController();
+      const abortOnDisconnect = () => requestController.abort();
+      res.once("close", abortOnDisconnect);
+      try {
+        const { winner, errors: raceErrors } = await raceToFirstChunk<any>({
+          plan: modelsToTry.map((model) => ({ model, thinkingConfig: getThinkingConfig(model) })),
+          signal: requestController.signal,
+          ...raceTimingsFor(req.file?.size || Buffer.byteLength(serverBase64Data || "", "base64")),
+          maxParallel: 2,
+          isFatal: (err) => [401, 403].includes(Number(err?.status ?? err?.code)) || /key not valid|api_key_invalid|invalid api key|permission_denied/i.test(String(err?.message || err)),
+          isInvalidArgument: isInvalidArgumentError,
+          log: (message) => console.log(`[Server Gemini] ${message}`),
+          start: (entry, useThinking, signal) => ai.models.generateContentStream({
+            model: entry.model,
+            contents: buildContents(),
+            config: {
+              systemInstruction: prompt || "You are an expert audio transcription assistant. Please perform direct, verbatim transcription of the attached media.",
+              temperature: 0,
+              abortSignal: signal,
+              ...(useThinking && entry.thinkingConfig ? { thinkingConfig: entry.thinkingConfig } : {}),
+            },
+          }),
+        });
+        if (requestController.signal.aborted) return;
+        const fatal = raceErrors.find((entry) => [401, 403].includes(Number(entry.error?.status ?? entry.error?.code)) || /key not valid|api_key_invalid|invalid api key|permission_denied/i.test(String(entry.error?.message || entry.error)));
+        if (fatal) throw fatal.error;
+        errors.push(...raceErrors.map((entry) => ({ model: entry.model, error: entry.error })));
+        if (winner) {
+          firstChunkText = winner.first.done ? "" : (winner.first.value?.text || "");
+          stream = { [Symbol.asyncIterator]: () => winner.iterator };
+          modelUsed = winner.model;
         }
-      }
-      if (!errors.every(e => e.overloaded)) break passLoop;
+      } finally {
+        if (!stream) res.off("close", abortOnDisconnect);
       }
 
       if (!stream) {

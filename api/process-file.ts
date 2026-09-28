@@ -16,20 +16,16 @@
 
 import { GoogleGenAI } from "@google/genai";
 import { raceTimingsFor, raceToFirstChunk } from "../src/services/geminiRace";
+import { buildModelOrder, getThinkingConfig, isKnownGeminiModel } from "../src/services/geminiModels";
 
 // Vercel rejects request bodies over 4.5 MB before they reach the function.
 const MAX_INLINE_BYTES = 4 * 1024 * 1024;
-// Cool-downs between full sweeps of the model list when EVERY model returned
-// an overload error. Kept well inside the function's maxDuration (vercel.json).
-const SWEEP_COOLDOWNS_MS = [5000, 10000, 20000, 30000];
-const MODEL_ID_PATTERN = /^gemini-[a-z0-9.-]+$/;
-const DEFAULT_MODEL_PLAN: ModelPlanEntry[] = [
-  { model: "gemini-3.5-flash-lite", thinkingConfig: { thinkingLevel: "MINIMAL" } },
-  { model: "gemini-3.1-flash-lite", thinkingConfig: { thinkingBudget: 0 } },
-];
+type ModelPlanEntry = { model: string; thinkingConfig?: unknown };
 
-type ThinkingConfig = { thinkingLevel?: "MINIMAL" | "LOW" | "MEDIUM" | "HIGH"; thinkingBudget?: number };
-type ModelPlanEntry = { model: string; thinkingConfig?: ThinkingConfig };
+const DEFAULT_MODEL_PLAN: ModelPlanEntry[] = buildModelOrder().map((model) => ({
+  model,
+  thinkingConfig: getThinkingConfig(model),
+}));
 
 function json(body: Record<string, unknown>, status: number): Response {
   return new Response(JSON.stringify(body), {
@@ -43,21 +39,8 @@ function parseModelPlan(raw: FormDataEntryValue | null): ModelPlanEntry[] {
   try {
     const parsed = JSON.parse(raw);
     if (!Array.isArray(parsed)) return DEFAULT_MODEL_PLAN;
-    const plan: ModelPlanEntry[] = [];
-    for (const entry of parsed.slice(0, 10)) {
-      if (!entry || typeof entry.model !== "string" || !MODEL_ID_PATTERN.test(entry.model)) continue;
-      const tc = entry.thinkingConfig;
-      let thinkingConfig: ThinkingConfig | undefined;
-      if (tc && typeof tc === "object") {
-        if (["MINIMAL", "LOW", "MEDIUM", "HIGH"].includes(tc.thinkingLevel)) {
-          thinkingConfig = { thinkingLevel: tc.thinkingLevel };
-        } else if (Number.isInteger(tc.thinkingBudget) && tc.thinkingBudget >= -1 && tc.thinkingBudget <= 32768) {
-          thinkingConfig = { thinkingBudget: tc.thinkingBudget };
-        }
-      }
-      if (!plan.some((p) => p.model === entry.model)) plan.push({ model: entry.model, thinkingConfig });
-    }
-    return plan.length ? plan : DEFAULT_MODEL_PLAN;
+    const preferred = parsed.find((entry) => isKnownGeminiModel(entry?.model))?.model;
+    return buildModelOrder(preferred).map((model) => ({ model, thinkingConfig: getThinkingConfig(model) }));
   } catch {
     return DEFAULT_MODEL_PLAN;
   }
@@ -90,21 +73,6 @@ function isOverloaded(err: any): boolean {
   return ["unavailable", "high demand", "overloaded", "resource_exhausted", "deadline", "internal", "503", "429"].some((s) =>
     msg.includes(s),
   );
-}
-
-function sleep(ms: number, signal: AbortSignal): Promise<void> {
-  return new Promise((resolve, reject) => {
-    if (signal.aborted) return reject(new Error("aborted"));
-    const onAbort = () => {
-      clearTimeout(t);
-      reject(new Error("aborted"));
-    };
-    const t = setTimeout(() => {
-      signal.removeEventListener("abort", onAbort);
-      resolve();
-    }, ms);
-    signal.addEventListener("abort", onAbort, { once: true });
-  });
 }
 
 export async function POST(request: Request): Promise<Response> {
@@ -156,54 +124,42 @@ export async function POST(request: Request): Promise<Response> {
   const timings = raceTimingsFor(file.size);
 
   try {
-    for (let sweep = 0; sweep <= SWEEP_COOLDOWNS_MS.length; sweep++) {
-      if (sweep > 0) {
-        if (!errors.every((e) => e.overloaded)) break;
-        const cooldown = SWEEP_COOLDOWNS_MS[sweep - 1];
-        console.log(`[api/process-file] All models overloaded, cooling down ${cooldown / 1000}s before sweep ${sweep + 1}`);
-        errors.length = 0;
-        await sleep(cooldown, signal);
-      }
+    // Read the first chunk before committing headers, while the other Flash Lite
+    // model can take over if the preferred one fails or stalls.
+    const { winner, errors: raceErrors } = await raceToFirstChunk<any>({
+      plan: modelPlan,
+      signal,
+      ...timings,
+      maxParallel: 2,
+      isFatal: isAuthError,
+      isInvalidArgument,
+      log: (message) => console.log(`[api/process-file] ${message}`),
+      start: (entry, useThinking, attemptSignal) =>
+        ai.models.generateContentStream({
+          model: entry.model,
+          contents,
+          config: {
+            systemInstruction: prompt,
+            temperature: 0,
+            abortSignal: attemptSignal,
+            ...(useThinking && entry.thinkingConfig ? { thinkingConfig: entry.thinkingConfig as any } : {}),
+          },
+        }),
+    });
 
-      // Read each model's first chunk before committing headers: Gemini often
-      // reports 503 on the first read, and after headers are sent we can no
-      // longer fall back to another model.
-      const { winner, errors: raceErrors } = await raceToFirstChunk<any>({
-        plan: modelPlan,
-        signal,
-        ...timings,
-        maxParallel: 2,
-        isFatal: isAuthError,
-        isInvalidArgument,
-        log: (message) => console.log(`[api/process-file] ${message}`),
-        start: (entry, useThinking, attemptSignal) =>
-          ai.models.generateContentStream({
-            model: entry.model,
-            contents,
-            config: {
-              systemInstruction: prompt,
-              temperature: 0,
-              abortSignal: attemptSignal,
-              ...(useThinking && entry.thinkingConfig ? { thinkingConfig: entry.thinkingConfig as any } : {}),
-            },
-          }),
-      });
+    if (signal.aborted) return json({ error: "Request aborted.", code: "ABORTED" }, 499);
 
-      if (signal.aborted) return json({ error: "Request aborted.", code: "ABORTED" }, 499);
+    const fatal = raceErrors.find((e) => isAuthError(e.error));
+    if (fatal) return json({ error: String(fatal.error?.message || fatal.error), code: "AUTH" }, 401);
 
-      const fatal = raceErrors.find((e) => isAuthError(e.error));
-      if (fatal) return json({ error: String(fatal.error?.message || fatal.error), code: "AUTH" }, 401);
+    for (const e of raceErrors) {
+      errors.push({ model: e.model, message: String(e.error?.message || e.error), overloaded: isOverloaded(e.error) });
+    }
 
-      for (const e of raceErrors) {
-        errors.push({ model: e.model, message: String(e.error?.message || e.error), overloaded: isOverloaded(e.error) });
-      }
-
-      if (winner) {
-        firstChunkText = winner.first.done ? "" : winner.first.value?.text || "";
-        iterator = winner.iterator;
-        modelUsed = winner.model;
-        break;
-      }
+    if (winner) {
+      firstChunkText = winner.first.done ? "" : winner.first.value?.text || "";
+      iterator = winner.iterator;
+      modelUsed = winner.model;
     }
   } catch (err: any) {
     if (signal.aborted) return json({ error: "Request aborted.", code: "ABORTED" }, 499);
