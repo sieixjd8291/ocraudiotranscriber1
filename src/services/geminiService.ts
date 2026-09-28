@@ -93,17 +93,18 @@ const getApiKey = () => {
  * don't exist, so we skip those probes (they'd 404 → the SPA's "Page not
  * found" HTML, adding console noise + latency on every load).
  *
- * On Vercel this is known at BUILD time: vercel.json runs `vite build` only,
- * so the Express server.ts that defines those routes is never deployed. The
- * VERCEL=1 build-time flag is reliable across custom domains / preview URLs,
- * unlike hostname substring matching (a custom domain lacks "vercel.app").
+ * Vercel is NOT static: api/health.ts, api/prewarm.ts and api/process-file.ts
+ * are deployed as serverless functions there.
  */
 const isStaticHosting = (): boolean => {
-  if (process.env.VERCEL) return true;
   if (typeof window === "undefined") return false;
   const host = window.location.hostname;
-  return host.includes("netlify.app") || host.includes("github.io") || host.includes("vercel.app");
+  return host.includes("netlify.app") || host.includes("github.io");
 };
+
+// Vercel rejects function request bodies over 4.5 MB; leave room for the
+// multipart envelope + prompt. Larger files use the direct client path.
+const SERVER_ROUTE_MAX_FILE_BYTES = 4 * 1024 * 1024;
 
 export async function prewarmGeminiClient(specificModel?: string) {
   const startPrewarm = performance.now();
@@ -497,9 +498,15 @@ Treat this segment as a direct continuation of that text. Do NOT repeat or resta
 
   // Try Server-Side Process API First (More secure, avoids browser CORS/CSP issues and supports larger files)
   const startServerCheck = performance.now();
-  const useServer = await isServerApiAvailable();
+  const serverReachable = await isServerApiAvailable();
+  const fitsServerRoute = file.size <= SERVER_ROUTE_MAX_FILE_BYTES;
+  const useServer = serverReachable && fitsServerRoute;
   const serverCheckDuration = performance.now() - startServerCheck;
-  GeminiPerformanceLogger.log("SERVER_API_CHECK", serverCheckDuration, `Checked server health. Status: ${useServer ? "REACHABLE" : "UNREACHABLE"}`);
+  GeminiPerformanceLogger.log(
+    "SERVER_API_CHECK",
+    serverCheckDuration,
+    `Checked server health. Status: ${serverReachable ? "REACHABLE" : "UNREACHABLE"}${serverReachable && !fitsServerRoute ? " (file too large for server route, using direct client path)" : ""}`,
+  );
 
   if (useServer) {
     const serverProcessStart = performance.now();
@@ -511,9 +518,10 @@ Treat this segment as a direct continuation of that text. Do NOT repeat or resta
       formData.append("mimeType", actualMimeType);
       formData.append("preferredModel", preferredModel);
       formData.append("prompt", prompt);
-      if (apiKey) {
-        formData.append("apiKey", apiKey);
-      }
+      formData.append(
+        "modelPlan",
+        JSON.stringify(buildModelOrder(preferredModel).map((model) => ({ model, thinkingConfig: getThinkingConfig(model) }))),
+      );
 
       const uploadStartTime = performance.now();
       const response = await fetch("/api/process-file", {
@@ -530,11 +538,6 @@ Treat this segment as a direct continuation of that text. Do NOT repeat or resta
       if (response.ok) {
         // Stream response body chunk-by-chunk for memory health
         const modelUsed = response.headers.get("x-model-used") || preferredModel;
-        
-        // Cache successful model for next runs to bypass round-trip fallbacks completely
-        if (typeof window !== "undefined" && modelUsed) {
-          localStorage.setItem("gemini_last_success_model", modelUsed);
-        }
 
         const reader = response.body?.getReader();
         const decoder = new TextDecoder("utf-8");
@@ -606,11 +609,32 @@ Treat this segment as a direct continuation of that text. Do NOT repeat or resta
       } else {
         const errorText = await response.text();
         console.warn(`[Gemini client-side] Server-side API returned error status ${response.status}: ${errorText}`);
-        throw new Error(`Server returned ${response.status}: ${errorText}`);
+        let serverError: { error?: string; code?: string } = {};
+        try {
+          serverError = JSON.parse(errorText);
+        } catch {}
+        // The server already swept every model with cool-downs; repeating the
+        // same sweeps from the browser would only double the wait.
+        if (serverError.code === "ALL_MODELS_OVERLOADED") {
+          const overloadError = new Error(serverError.error || "Gemini is overloaded for every model right now.");
+          (overloadError as any).isFinal = true;
+          throw overloadError;
+        }
+        if (serverError.code === "AUTH") {
+          const authError = new Error(
+            "The API Key provided is either invalid or does not have permission to access the Gemini API. Please check your credentials.",
+          );
+          (authError as any).isFinal = true;
+          throw authError;
+        }
+        throw new Error(`Server returned ${response.status}: ${serverError.error || errorText}`);
       }
     } catch (serverErr: any) {
       if (signal?.aborted || serverErr.name === "AbortError") {
         throw new DOMException("The user aborted a request.", "AbortError");
+      }
+      if (serverErr?.isFinal) {
+        throw serverErr;
       }
       
       const errMsg = String(serverErr?.message || serverErr);

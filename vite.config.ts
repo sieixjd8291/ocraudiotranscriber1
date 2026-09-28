@@ -9,11 +9,6 @@ export default defineConfig(({mode}) => {
     plugins: [react(), tailwindcss()],
     define: {
       'process.env.GEMINI_API_KEY': JSON.stringify(env.GEMINI_API_KEY),
-      // Vercel sets VERCEL=1 at build time. Exposed so isStaticHosting() in
-      // geminiService can reliably skip /api/health + /api/prewarm probes that
-      // don't exist on Vercel (server.ts isn't deployed there), regardless of
-      // the runtime hostname (custom domains don't contain "vercel.app").
-      'process.env.VERCEL': JSON.stringify(env.VERCEL || ''),
     },
     resolve: {
       alias: {
