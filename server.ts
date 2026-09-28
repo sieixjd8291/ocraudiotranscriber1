@@ -825,9 +825,9 @@ async function startServer() {
   const app = express();
   const PORT = 3000;
 
-  // Set payload size limit high to support large audio/video file uploads
-  app.use(express.json({ limit: "150mb" }));
-  app.use(express.urlencoded({ limit: "150mb", extended: true }));
+  // No payload size cap so arbitrarily large audio/video uploads are accepted
+  app.use(express.json({ limit: Infinity }));
+  app.use(express.urlencoded({ limit: Infinity, extended: true }));
 
   const storage = multer.diskStorage({
     destination: function (req, file, cb) {
@@ -849,7 +849,7 @@ async function startServer() {
 
   const activeUploads = new Map<string, { totalChunks: number, filename: string, mimeType: string, chunks: Map<number, Buffer>, receivedChunkIndices: Set<number> }>();
 
-  app.post("/api/uploads", multer({ storage: multer.memoryStorage(), limits: { fileSize: 25 * 1024 * 1024 } }).single("chunk"), async (req, res) => {
+  app.post("/api/uploads", multer({ storage: multer.memoryStorage() }).single("chunk"), async (req, res) => {
     try {
       const apiKey = req.headers["x-api-key"] as string;
       if (!apiKey) return res.status(401).json({ error: "Missing x-api-key" });
@@ -1285,39 +1285,77 @@ async function startServer() {
         }
       }
 
-      for (const model of modelsToTry) {
-        try {
-          console.log(`[Server Gemini] Attempting streaming generation: ${model}`);
-          const attemptStream = await ai.models.generateContentStream({
-            model: model,
-            contents: buildContents(),
-            config: {
-              systemInstruction: prompt || "You are an expert audio transcription assistant. Please perform direct, verbatim transcription of the attached media.",
-              temperature: 0.0,
-              thinkingConfig: {
-                thinkingBudget: 0
+      let firstChunkText = "";
+      const MAX_ATTEMPTS_PER_MODEL = 3;
+      const MAX_PASSES = 2;
+
+      passLoop: for (let pass = 1; pass <= MAX_PASSES; pass++) {
+      if (pass > 1) {
+        // Every model reported overload: Google 503 spikes usually clear within
+        // seconds, so cool down once and sweep the whole model list again.
+        console.log(`[Server Gemini] All models busy, cooling down 6s before pass ${pass}/${MAX_PASSES}...`);
+        errors.length = 0;
+        await new Promise(r => setTimeout(r, 6000));
+      }
+      modelLoop: for (const model of modelsToTry) {
+        for (let attempt = 1; attempt <= MAX_ATTEMPTS_PER_MODEL; attempt++) {
+          try {
+            console.log(`[Server Gemini] Attempting streaming generation: ${model} (attempt ${attempt}/${MAX_ATTEMPTS_PER_MODEL})`);
+            const attemptStream = await ai.models.generateContentStream({
+              model: model,
+              contents: buildContents(),
+              config: {
+                systemInstruction: prompt || "You are an expert audio transcription assistant. Please perform direct, verbatim transcription of the attached media.",
+                temperature: 0.0,
+                thinkingConfig: {
+                  thinkingBudget: 0
+                }
               }
+            });
+            // Pull the first chunk before committing response headers: Gemini often
+            // reports 503 UNAVAILABLE on the first read, and once headers are sent
+            // we can no longer fall back to another model.
+            const iterator = attemptStream[Symbol.asyncIterator]();
+            const first = await iterator.next();
+            firstChunkText = first.done ? "" : (first.value?.text || "");
+            stream = { [Symbol.asyncIterator]: () => iterator };
+            modelUsed = model;
+            break passLoop;
+          } catch (err: any) {
+            const cleanErrorMessage = err.message || String(err);
+            console.log(`[Server Gemini] Model ${model} failed to generate content (info: ${cleanErrorMessage})`);
+
+            const errMsg = cleanErrorMessage.toLowerCase();
+            const isInvalidKey = errMsg.includes('key not valid') ||
+                                 errMsg.includes('api_key_invalid') ||
+                                 errMsg.includes('invalid api key') ||
+                                 errMsg.includes('permission_denied') ||
+                                 errMsg.includes('403');
+            if (isInvalidKey) {
+              throw err;
             }
-          });
-          stream = attemptStream;
-          modelUsed = model;
-          break;
-        } catch (err: any) {
-          let cleanErrorMessage = err.message || String(err);
-          console.log(`[Server Gemini] Model ${model} failed to generate content (info: ${cleanErrorMessage})`);
-          errors.push({ model, error: err });
-          
-          // Fast-fail if key is invalid
-          const errMsg = String(err.message || err).toLowerCase();
-          const isInvalidKey = errMsg.includes('key not valid') || 
-                               errMsg.includes('api_key_invalid') || 
-                               errMsg.includes('invalid api key') ||
-                               errMsg.includes('permission_denied') ||
-                               errMsg.includes('403');
-          if (isInvalidKey) {
-            throw err;
+
+            const isOverloaded = errMsg.includes('503') ||
+                                 errMsg.includes('500') ||
+                                 errMsg.includes('504') ||
+                                 errMsg.includes('unavailable') ||
+                                 errMsg.includes('overloaded') ||
+                                 errMsg.includes('high demand') ||
+                                 errMsg.includes('deadline') ||
+                                 errMsg.includes('internal');
+            if (isOverloaded && attempt < MAX_ATTEMPTS_PER_MODEL) {
+              const delayMs = 2000 * Math.pow(2, attempt - 1) + Math.floor(Math.random() * 1000);
+              console.log(`[Server Gemini] ${model} is temporarily unavailable, retrying in ${delayMs}ms...`);
+              await new Promise(r => setTimeout(r, delayMs));
+              continue;
+            }
+
+            errors.push({ model, error: err, overloaded: isOverloaded });
+            continue modelLoop;
           }
         }
+      }
+      if (!errors.every(e => e.overloaded)) break passLoop;
       }
 
       if (!stream) {
@@ -1333,6 +1371,9 @@ async function startServer() {
       res.setHeader("x-model-used", modelUsed);
 
       try {
+        if (firstChunkText) {
+          res.write(firstChunkText);
+        }
         for await (const chunk of stream) {
           if (chunk.text) {
             res.write(chunk.text);
@@ -2834,6 +2875,8 @@ async function startServer() {
   server.setTimeout(0);
   server.headersTimeout = 0;
   server.keepAliveTimeout = 0;
+  // Node defaults to a 5-minute requestTimeout, which aborts slow uploads of large files
+  server.requestTimeout = 0;
 }
 
 startServer().catch((err) => {

@@ -524,7 +524,7 @@ async function parallelChunkedUpload(
   signal?: AbortSignal
 ): Promise<string> {
   const log = (msg: string) => onLog?.(msg);
-  const CHUNK_SIZE = 8 * 1024 * 1024; // 8 MB — well under the 25 MB multer limit
+  const CHUNK_SIZE = 8 * 1024 * 1024; // 8 MB per chunk keeps each request small and memory-friendly
   // TIER 1 — raised 5 -> 8 in-flight chunks. More parallel TCP streams recover
   // more of the available bandwidth on high-latency links, where a single
   // stream is window-limited rather than bandwidth-limited.
