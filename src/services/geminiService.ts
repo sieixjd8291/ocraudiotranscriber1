@@ -733,6 +733,16 @@ Treat this segment as a direct continuation of that text. Do NOT repeat or resta
     let successResult: { text: string; modelUsed: string } | null = null;
     const errors: any[] = [];
 
+    const MAX_PASSES = 2;
+    for (let pass = 1; pass <= MAX_PASSES && !successResult; pass++) {
+    if (pass > 1) {
+      // Only sweep again if every model failed with a transient overload (503/500/429);
+      // Google capacity spikes usually clear after a short cool-down.
+      if (!errors.every(e => isTransientError(e.error))) break;
+      console.log(`[Gemini client-side] All models busy, cooling down 6s before pass ${pass}/${MAX_PASSES}...`);
+      errors.length = 0;
+      await new Promise(r => setTimeout(r, 6000));
+    }
     for (const currentModel of modelsToTry) {
       if (signal?.aborted) {
         throw new DOMException("The user aborted a request.", "AbortError");
@@ -854,7 +864,7 @@ Treat this segment as a direct continuation of that text. Do NOT repeat or resta
           }
 
           if (attempt < maxRetries && isTransientError(err)) {
-            const delayMs = Math.pow(2, attempt) * 500;
+            const delayMs = Math.pow(2, attempt) * 1000 + Math.floor(Math.random() * 1000);
             if (onRetry) {
               onRetry(attempt, maxRetries, delayMs, err);
             }
@@ -891,6 +901,7 @@ Treat this segment as a direct continuation of that text. Do NOT repeat or resta
       if (successResult) {
         break;
       }
+    }
     }
 
     if (successResult) {

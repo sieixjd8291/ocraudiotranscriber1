@@ -1214,10 +1214,8 @@ async function startServer() {
       // Upload file to Google File API if provided on req.file
       let serverBase64Data = base64Data;
       if (req.file) {
-        // Gemini caps inline request payloads at ~20MB and base64 inflates by ~33%,
-        // so anything above ~14MB raw must go through the File API or Google returns 503/400.
-        if (req.file.size < 14 * 1024 * 1024) {
-          console.log(`[Server Gemini] File is under 14MB (${Math.round(req.file.size/1024)}KB), reading as base64 for inlineData to bypass File API processing delays.`);
+        if (req.file.size < 50 * 1024 * 1024) {
+          console.log(`[Server Gemini] File is under 50MB (${Math.round(req.file.size/1024)}KB), reading as base64 for inlineData to bypass File API processing delays.`);
           serverBase64Data = fs.readFileSync(req.file.path).toString("base64");
         } else {
           console.log(`[Server Gemini] Registering file with Google GenAI File API: ${req.file.path}`);
@@ -1289,7 +1287,16 @@ async function startServer() {
 
       let firstChunkText = "";
       const MAX_ATTEMPTS_PER_MODEL = 3;
+      const MAX_PASSES = 2;
 
+      passLoop: for (let pass = 1; pass <= MAX_PASSES; pass++) {
+      if (pass > 1) {
+        // Every model reported overload: Google 503 spikes usually clear within
+        // seconds, so cool down once and sweep the whole model list again.
+        console.log(`[Server Gemini] All models busy, cooling down 6s before pass ${pass}/${MAX_PASSES}...`);
+        errors.length = 0;
+        await new Promise(r => setTimeout(r, 6000));
+      }
       modelLoop: for (const model of modelsToTry) {
         for (let attempt = 1; attempt <= MAX_ATTEMPTS_PER_MODEL; attempt++) {
           try {
@@ -1313,7 +1320,7 @@ async function startServer() {
             firstChunkText = first.done ? "" : (first.value?.text || "");
             stream = { [Symbol.asyncIterator]: () => iterator };
             modelUsed = model;
-            break modelLoop;
+            break passLoop;
           } catch (err: any) {
             const cleanErrorMessage = err.message || String(err);
             console.log(`[Server Gemini] Model ${model} failed to generate content (info: ${cleanErrorMessage})`);
@@ -1337,16 +1344,18 @@ async function startServer() {
                                  errMsg.includes('deadline') ||
                                  errMsg.includes('internal');
             if (isOverloaded && attempt < MAX_ATTEMPTS_PER_MODEL) {
-              const delayMs = 1000 * Math.pow(2, attempt - 1) + Math.floor(Math.random() * 400);
+              const delayMs = 2000 * Math.pow(2, attempt - 1) + Math.floor(Math.random() * 1000);
               console.log(`[Server Gemini] ${model} is temporarily unavailable, retrying in ${delayMs}ms...`);
               await new Promise(r => setTimeout(r, delayMs));
               continue;
             }
 
-            errors.push({ model, error: err });
+            errors.push({ model, error: err, overloaded: isOverloaded });
             continue modelLoop;
           }
         }
+      }
+      if (!errors.every(e => e.overloaded)) break passLoop;
       }
 
       if (!stream) {
