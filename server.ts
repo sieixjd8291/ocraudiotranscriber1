@@ -1214,8 +1214,10 @@ async function startServer() {
       // Upload file to Google File API if provided on req.file
       let serverBase64Data = base64Data;
       if (req.file) {
-        if (req.file.size < 50 * 1024 * 1024) {
-          console.log(`[Server Gemini] File is under 50MB (${Math.round(req.file.size/1024)}KB), reading as base64 for inlineData to bypass File API processing delays.`);
+        // Gemini caps inline request payloads at ~20MB and base64 inflates by ~33%,
+        // so anything above ~14MB raw must go through the File API or Google returns 503/400.
+        if (req.file.size < 14 * 1024 * 1024) {
+          console.log(`[Server Gemini] File is under 14MB (${Math.round(req.file.size/1024)}KB), reading as base64 for inlineData to bypass File API processing delays.`);
           serverBase64Data = fs.readFileSync(req.file.path).toString("base64");
         } else {
           console.log(`[Server Gemini] Registering file with Google GenAI File API: ${req.file.path}`);
@@ -1285,37 +1287,64 @@ async function startServer() {
         }
       }
 
-      for (const model of modelsToTry) {
-        try {
-          console.log(`[Server Gemini] Attempting streaming generation: ${model}`);
-          const attemptStream = await ai.models.generateContentStream({
-            model: model,
-            contents: buildContents(),
-            config: {
-              systemInstruction: prompt || "You are an expert audio transcription assistant. Please perform direct, verbatim transcription of the attached media.",
-              temperature: 0.0,
-              thinkingConfig: {
-                thinkingBudget: 0
+      let firstChunkText = "";
+      const MAX_ATTEMPTS_PER_MODEL = 3;
+
+      modelLoop: for (const model of modelsToTry) {
+        for (let attempt = 1; attempt <= MAX_ATTEMPTS_PER_MODEL; attempt++) {
+          try {
+            console.log(`[Server Gemini] Attempting streaming generation: ${model} (attempt ${attempt}/${MAX_ATTEMPTS_PER_MODEL})`);
+            const attemptStream = await ai.models.generateContentStream({
+              model: model,
+              contents: buildContents(),
+              config: {
+                systemInstruction: prompt || "You are an expert audio transcription assistant. Please perform direct, verbatim transcription of the attached media.",
+                temperature: 0.0,
+                thinkingConfig: {
+                  thinkingBudget: 0
+                }
               }
+            });
+            // Pull the first chunk before committing response headers: Gemini often
+            // reports 503 UNAVAILABLE on the first read, and once headers are sent
+            // we can no longer fall back to another model.
+            const iterator = attemptStream[Symbol.asyncIterator]();
+            const first = await iterator.next();
+            firstChunkText = first.done ? "" : (first.value?.text || "");
+            stream = { [Symbol.asyncIterator]: () => iterator };
+            modelUsed = model;
+            break modelLoop;
+          } catch (err: any) {
+            const cleanErrorMessage = err.message || String(err);
+            console.log(`[Server Gemini] Model ${model} failed to generate content (info: ${cleanErrorMessage})`);
+
+            const errMsg = cleanErrorMessage.toLowerCase();
+            const isInvalidKey = errMsg.includes('key not valid') ||
+                                 errMsg.includes('api_key_invalid') ||
+                                 errMsg.includes('invalid api key') ||
+                                 errMsg.includes('permission_denied') ||
+                                 errMsg.includes('403');
+            if (isInvalidKey) {
+              throw err;
             }
-          });
-          stream = attemptStream;
-          modelUsed = model;
-          break;
-        } catch (err: any) {
-          let cleanErrorMessage = err.message || String(err);
-          console.log(`[Server Gemini] Model ${model} failed to generate content (info: ${cleanErrorMessage})`);
-          errors.push({ model, error: err });
-          
-          // Fast-fail if key is invalid
-          const errMsg = String(err.message || err).toLowerCase();
-          const isInvalidKey = errMsg.includes('key not valid') || 
-                               errMsg.includes('api_key_invalid') || 
-                               errMsg.includes('invalid api key') ||
-                               errMsg.includes('permission_denied') ||
-                               errMsg.includes('403');
-          if (isInvalidKey) {
-            throw err;
+
+            const isOverloaded = errMsg.includes('503') ||
+                                 errMsg.includes('500') ||
+                                 errMsg.includes('504') ||
+                                 errMsg.includes('unavailable') ||
+                                 errMsg.includes('overloaded') ||
+                                 errMsg.includes('high demand') ||
+                                 errMsg.includes('deadline') ||
+                                 errMsg.includes('internal');
+            if (isOverloaded && attempt < MAX_ATTEMPTS_PER_MODEL) {
+              const delayMs = 1000 * Math.pow(2, attempt - 1) + Math.floor(Math.random() * 400);
+              console.log(`[Server Gemini] ${model} is temporarily unavailable, retrying in ${delayMs}ms...`);
+              await new Promise(r => setTimeout(r, delayMs));
+              continue;
+            }
+
+            errors.push({ model, error: err });
+            continue modelLoop;
           }
         }
       }
@@ -1333,6 +1362,9 @@ async function startServer() {
       res.setHeader("x-model-used", modelUsed);
 
       try {
+        if (firstChunkText) {
+          res.write(firstChunkText);
+        }
         for await (const chunk of stream) {
           if (chunk.text) {
             res.write(chunk.text);
