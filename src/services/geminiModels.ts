@@ -12,9 +12,6 @@ export const GEMINI_MODEL_HIERARCHY = [
   "gemini-3.5-flash-lite",
   "gemini-3.1-flash-lite",
   "gemini-3.8-flash",
-  "gemini-3.7-flash",
-  "gemini-3.6-flash",
-  "gemini-3.5-flash",
 ] as const;
 
 /** Automatic switching is limited to the two Flash Lite models. */
@@ -28,9 +25,6 @@ export const GEMINI_MODEL_NAMES: Record<GeminiModelId, string> = {
   "gemini-3.5-flash-lite": "Gemini 3.5 Flash Lite",
   "gemini-3.1-flash-lite": "Gemini 3.1 Flash Lite",
   "gemini-3.8-flash": "Gemini 3.8 Flash",
-  "gemini-3.7-flash": "Gemini 3.7 Flash",
-  "gemini-3.6-flash": "Gemini 3.6 Flash",
-  "gemini-3.5-flash": "Gemini 3.5 Flash",
 };
 
 export function isKnownGeminiModel(model: string | null | undefined): model is GeminiModelId {
@@ -55,9 +49,6 @@ const THINKING_CONFIG_BY_MODEL: Record<GeminiModelId, ThinkingConfig> = {
   "gemini-3.5-flash-lite": { thinkingLevel: ThinkingLevel.MINIMAL },
   "gemini-3.1-flash-lite": { thinkingBudget: 0 },
   "gemini-3.8-flash": { thinkingLevel: ThinkingLevel.LOW },
-  "gemini-3.7-flash": { thinkingLevel: ThinkingLevel.LOW },
-  "gemini-3.6-flash": { thinkingLevel: ThinkingLevel.MINIMAL },
-  "gemini-3.5-flash": { thinkingLevel: ThinkingLevel.MINIMAL },
 };
 
 export function getThinkingConfig(model: string): ThinkingConfig | undefined {
